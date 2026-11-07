@@ -215,6 +215,15 @@ class TestEngine(Base):
         self.assertEqual(run(self.v, "validate")[0], 0)
         self.assertEqual(run(self.v, "apply", "done", "--ctx", "acme-corp", "--task", "T-0004", "--yes")[0], 0)
 
+    def test_upgrade_and_sync_keep_user_config_lines(self):
+        cfg = self.v / ".pro-assistant/config.md"
+        text = cfg.read_text().replace("skill_version: 0.5.0", "skill_version: 0.3.0\nvault_home: /my/pin")
+        cfg.write_text(text + "- my own note\n")
+        self.assertEqual(run(self.v, "upgrade")[0], 0)
+        self.assertEqual(run(self.v, "sync")[0], 0)
+        after = cfg.read_text()
+        self.assertEqual(after, text.replace("skill_version: 0.3.0", "skill_version: 0.5.0") + "- my own note\n")
+
     def test_apply_restores_when_validate_fails(self):
         f = self.v / self.F
         before = f.read_text()

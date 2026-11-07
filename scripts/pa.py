@@ -365,11 +365,20 @@ def write_cfg(v, ctxs, created, skill_version=None, schema=None, **over):
     sc = schema if schema is not None else cfg.get("schema", 0 if cfg else SCHEMA)
     p = v.root / CFG
     p.parent.mkdir(parents=True, exist_ok=True)
-    existed = p.exists()
-    p.write_text(render("config.md", contexts=", ".join(ctxs), schema=sc, skill_version=sv, **cur),
-                 encoding="utf-8")
-    if not existed:
+    if not p.exists():
+        p.write_text(render("config.md", contexts=", ".join(ctxs), schema=sc, skill_version=sv, **cur),
+                     encoding="utf-8")
         created.append(str(CFG))
+        return
+    # existing config may hold user keys and notes: change managed keys in place, nothing else
+    text = p.read_text(encoding="utf-8")
+    values = dict(cur, contexts="[%s]" % ", ".join(ctxs), schema=sc, skill_version=sv)
+    for k, val in values.items():
+        line = "%s: %s" % (k, val)
+        text, n = re.subn(r"^%s:.*$" % re.escape(k), lambda _: line, text, count=1, flags=re.M)
+        if not n:
+            text = re.sub(r"\n---\n", "\n%s\n---\n" % line, text, count=1)
+    p.write_text(text, encoding="utf-8")
 
 
 def cmd_init(v, a):
