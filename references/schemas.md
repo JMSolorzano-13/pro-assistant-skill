@@ -27,6 +27,8 @@ Context dir names = slug (lowercase, hyphens).
 - dep: optional, comma T-ids, same ctx only. no self, no cycles. only real blockers. moving task keeps dep.
 - done -> keep line, set `[x]` + st:done. no delete.
 - pri: high|med|low.
+- pkg: optional slug. stage: optional verb, needs pkg. Same pkg = one piece of work; brief shows active stage (earliest due).
+- rel: optional comma refs (T-|D-|R-|min-) = memory links, read by `graph --of`. dup_of: T-id, set by merge. Relations live here; graph is built in memory per call, no store.
 
 ## project index.md fm
 type,id(PRJ-SLUG),name,alias[],ctx,status,pri,start,due,dep[],blocks[],stake[],reviewed

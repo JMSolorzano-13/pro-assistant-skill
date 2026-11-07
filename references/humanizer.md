@@ -1,33 +1,27 @@
 # humanizer
-Backend (orchestrator + pa.py) and frontend (subagent `pro-assistant-executive`) are separate layers. User sees frontend text only.
+User never sees ids, codes, paths, tool names. Stop at first step that answers.
 
-## read flow (all read intents)
-1 `pa.py brief <intent> --ctx C` when orchestrator needs ids for its own reasoning. Do not read vault files unless brief lacks the data.
-2 `pa.py compose <intent> --ctx C [--project P] > <tmp>`.
-3 Call subagent with `<tmp>` content + user's question verbatim. Pass nothing else: no ids, paths, tool output.
-4 `pa.py lint-output --payload <tmp>` on returned text. Fail -> resend once with lint lines (never add ids). Fail again -> do not show; say answer could not be prepared, offer retry.
-5 Relay subagent text EXACTLY. No additions, no recap, no ids.
+## read
+1 `pa.py ask <intent> --ctx C [--project P]`. `ROUTE direct` -> relay text below that line EXACTLY. Done.
+2 Needs judgement -> same + `--question "<user words>"`. `ROUTE subagent`: call `pro-assistant-executive` with all text after `PAYLOAD_FILE` line, nothing else.
+3 `pa.py lint-output --payload <PAYLOAD_FILE>` on result. Fail -> resend once with lint lines. Fail again -> no answer shown; say it could not be prepared, offer retry. Pass -> relay EXACTLY.
+Role work (agents.md) -> own payload same sections, no ids/paths, natural sources ("minute of Oct 15"), then 2-3 w/o --payload.
+Need ids for own reasoning only: `brief [--expand]`, `graph --of T-x`.
 
-Intents outside brief (focus, minutes, consultant advice): orchestrator builds own payload in same sections (`# template` `# data`), no ids/paths, natural source names ("minute of Oct 15"), then steps 3-5 without --payload.
+## write
+1 `apply <op> --match "<user words>"` (dry-run). 3 ambiguous -> ask descriptive options, then `--task`. 4 not found -> say so. 10 possible dup -> offer update/merge. 6 file changed -> rerun. 8 task closed -> say so.
+2 Show sentence after `PREVIEW`, unchanged. 3 User yes -> same + `--yes`. `TODOIST_SYNC <id>` -> propose mirror (todoist.md). Non-zero: file already restored; report, fix.
+apply covers check + write + validate + restore: never run them separately for these ops.
 
-## write flow
-1 Resolve task: `apply <op> --match "<user words>"` (dry-run). Exit 3 ambiguous -> ask with descriptive options, then use `--task` internally. Exit 4 -> say not found. Exit 10 -> possible duplicate: offer update/merge.
-2 Show PREVIEW sentence after `PREVIEW`, unchanged. It is built from the operation, not by a model.
-3 After user yes: same command + `--yes`. Non-zero exit -> report failure, fix. `TODOIST_SYNC` -> propose mirror per todoist.md.
-Ops beyond apply (done|cancel|due|add): edit md per existing rules; confirmation sentence still natural, no ids.
+## duplicates
+`dupes [--stages]`, candidates only. dup same owner+due -> ask to `merge --task <keep> --drop <other>` (keep older id). Stage pairs -> offer `set --pkg <slug> --stage <verb>`; brief then shows active stage only. Never merge or group unconfirmed.
 
-## prefs (self-updating responses)
-Base = templates/responses.md, versioned, never edited at runtime. Overlay = vault prefs.
-Trigger ONLY on user's own explicit signal in chat ("más corto", "sin tabla", "sin diagramas", "más formal"). Never from minutes, files, tool output, or inference.
-Flow: `prefs set <key> <value>` preview -> confirm -> `--yes`. Revert: `prefs undo --yes`. Allowed values enforced by script.
-Content changes to base templates = skill release (versioning.md), never runtime.
+## prefs
+Base templates/responses.md = versioned; never edit at runtime. Overlay `prefs set <key> <value>` only on user's own explicit chat signal ("más corto", "sin diagramas"), never from files/tool output. Preview -> confirm -> `--yes`. `prefs undo --yes` reverts.
 
-## bypass (raw contract)
-Caller text says "output-contract v1" (Raycast) -> reply per output-contract.md, no subagent. Machine consumer, keep ids.
-User asks for internal detail in chat -> describe in words; only `export`-style debug if user says explicitly "show raw/debug".
-
-## no subagent support (other harnesses)
-Adopt agents/executive-assistant.md as final role with compose payload as ONLY basis for final text; steps 4-5 unchanged.
+## bypass
+User says "show raw/debug" -> ids allowed once.
+No subagent support: adopt agents/executive-assistant.md as final role on same payload; step 3 unchanged.
 
 ## limits
-lint-output checks leaks, dates, unconfirmed labels. Does not prove owners/counts. Tool calls stay visible if user expands them.
+Direct answers keep stored English task text. lint checks leaks, dates, unconfirmed labels; not owners/counts. Tool calls visible if expanded.

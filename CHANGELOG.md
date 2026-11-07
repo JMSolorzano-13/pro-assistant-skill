@@ -1,6 +1,19 @@
 # changelog
 Format: Keep a Changelog. semver. Rules: references/versioning.md.
 
+## [0.5.0] - 2026-11-06
+### Added
+- `ask`: single read entry; Python answers list intents without a model, subagent only for judgement
+- `graph` (in-memory, transitive impact, `unblock` intent) and `dupes` (dup vs stage candidates)
+- `apply`: update, set, merge, undo, --json; restores on validate failure, keeps CRLF and field placement
+- task fields `pkg:`, `stage:`, `rel:`, `dup_of:`; brief collapses a pkg to its active stage
+### Changed
+- vault schema stays 2: new fields are optional and ignored by older readers
+- `check` also matches same verb + same work across abbreviations; `validate` warns on possible dups
+- SKILL.md, intents, agents, dedupe, humanizer reduced: facts move to Python
+### Removed
+- output contract v1 and references/output-contract.md: all use is chat with the skill
+
 ## [0.4.0] - 2026-11-06
 ### Added
 - backend/frontend split: subagent `pro-assistant-executive` writes final answers from an id-free payload

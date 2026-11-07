@@ -24,3 +24,6 @@ Lead: highest risk as written. Table: risk | severity in words (15+ high, 8-12 m
 
 ## project
 Lead: state of project in one sentence, target date. Then next tasks, what blocks them, top risks. Include diagram if given.
+
+## unblock
+Lead: task that frees most work and how many (unblocks column). Then rest in order. No other inference.

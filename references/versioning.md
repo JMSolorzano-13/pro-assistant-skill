@@ -5,7 +5,7 @@ Vault stores `schema` (int, vault format) + `skill_version` in `.pro-assistant/c
 ## bump rules
 - PATCH: wording/bugfix, no vault change.
 - MINOR: new feature, vault-compatible.
-- MAJOR: breaking skill behavior. Always bump `SCHEMA` in pa.py when vault format changes (file layout, line fields, fm keys) + add MIGRATIONS[old] step. Schema bump => MAJOR (or MINOR pre-1.0).
+- MAJOR: breaking skill behavior. Bump `SCHEMA` in pa.py when vault format changes in a way older readers cannot ignore (file layout, required line fields, fm keys); optional fields do not bump + add MIGRATIONS[old] step. Schema bump => MAJOR (or MINOR pre-1.0).
 - Release: edit VERSION + SKILL.md version + CHANGELOG (same commit). Tag `vX.Y.Z`.
 
 ## runtime
@@ -16,3 +16,4 @@ Vault stores `schema` (int, vault format) + `skill_version` in `.pro-assistant/c
 
 ## compat
 - schema 1 -> 2 (v0.2.0): additive (`dep:`, `st:doing`, `view_port`, `refresh_min`). `upgrade` bumps config only. Old md valid as is.
+- v0.5.0: optional task fields `pkg:`, `stage:`, `rel:`, `dup_of:`. No schema bump: older readers ignore them, no vault must change.

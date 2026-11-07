@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """pro-assistant vault tool. stdlib only.
-cmds: version | init | sync | validate | next-id | check | new-project | upgrade | model | view | open | brief | apply | compose | prefs | lint-output
-exit: 0 ok | 1 validation errors | 2 refused (dup) | 3 ambiguous task | 4 task not found | 10 check found matches"""
-import argparse, contextlib, datetime, difflib, io, json, os, re, socket, subprocess, sys, time, webbrowser
+cmds: version | init | sync | validate | next-id | check | new-project | upgrade | model | view | open | ask | brief | apply | compose | prefs | lint-output | graph | dupes
+exit: 0 ok | 1 validation errors | 2 refused (dup) | 3 ambiguous task | 4 task not found | 6 file changed | 7 outside vault | 8 task not open | 10 matches found"""
+import argparse, contextlib, datetime, difflib, io, json, os, re, socket, subprocess, sys, tempfile, time, webbrowser
 import http.server, urllib.request
 from pathlib import Path
 
@@ -153,6 +153,9 @@ def match_report(v, ctx, text, topic=None):
         if t["done"] or t.get("st") in ("done", "cancelled") or x["pstatus"] in P_ARCH:
             continue
         s = sim(text, t["text"])
+        same = compare_tasks({"text": text}, t)
+        if same and same[0] == "dup" and same[1] >= 0.85:
+            s = max(s, same[1])
         if s >= 0.75:
             lines.append("TASK_MATCH %s in:%s sim:%.2f \"%s\"" % (t.get("id", "?"), x["scope"], s, t["text"]))
             found = True
@@ -282,6 +285,14 @@ def cmd_validate(v, a):
                     topic_n[t["topic"]] = topic_n.get(t["topic"], 0) + 1
             if t.get("td") and not todo_on:
                 W.append("td id present but todoist off @%s" % loc)
+        opens = [dict(x["t"], due=x["t"].get("due")) for x in v.tasks(ctx) if x["t"].get("id") and not x["t"]["done"]
+                 and x["t"].get("st") not in ("done", "cancelled") and x["pstatus"] not in P_ARCH]
+        for d in find_dupes(opens):
+            if d["kind"] == "dup" and d["same_owner_due"]:
+                W.append("possible dup %s %s: run dupes" % (d["a"]["id"], d["b"]["id"]))
+        for x in v.tasks(ctx):
+            if x["t"].get("stage") and not x["t"].get("pkg"):
+                W.append("stage without pkg %s" % x["t"].get("id"))
         tmap = {x["t"]["id"]: x["t"] for x in v.tasks(ctx) if x["t"].get("id")}
         graph = {tid: [d for d in t.get("dep", "").split(",") if d] for tid, t in tmap.items()}
         for tid, deps in graph.items():
@@ -510,7 +521,7 @@ def build_model(v):
             t = x["t"]
             tasks.append({"id": t.get("id"), "text": t["text"], "owner": t["owner"], "due": t.get("due") or None,
                           "pri": t.get("pri"), "kind": t.get("kind"), "topic": t.get("topic"), "src": t.get("src"),
-                          "st": t.get("st"), "td": t.get("td"), "done": t["done"],
+                          "st": t.get("st"), "td": t.get("td"), "done": t["done"], "pkg": t.get("pkg"), "stage": t.get("stage"), "rel": t.get("rel"),
                           "dep": [d for d in t.get("dep", "").split(",") if d],
                           "project": slug2id.get(x["scope"]) if x["scope"] != "tracker" else None,
                           "file": rel(v, x["file"]), "line": x["line"]})
@@ -642,7 +653,7 @@ def cmd_upgrade(v, a):
     return 0
 
 
-INTENTS = ("today", "week", "upcoming", "pending", "risks", "project")
+INTENTS = ("today", "week", "upcoming", "pending", "risks", "project", "unblock")
 ST_HUMAN = {"proposed": "unconfirmed", "confirmed": "pending", "doing": "in progress", "blocked": "blocked"}
 MONTHS = {"es": "enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre".split(),
           "en": "January February March April May June July August September October November December".split()}
@@ -683,73 +694,111 @@ def day(iso):
     return "%s %s" % (iso, datetime.date.fromisoformat(iso).strftime("%a")) if iso else ""
 
 
-def build_brief(v, intent, ctx, project=None, audience="agent", as_of=None):
-    """compact projection. agent keeps ids. human has no id, code, path: safe input for the humanizer."""
+def open_task(t):
+    return not t["done"] and t["st"] not in ("done", "cancelled")
+
+
+def task_graph(c):
+    """in-memory graph from the model. nothing persisted, so nothing to sync. returns (open tasks, downstream ids)."""
+    arch = {p["id"] for p in c["projects"] if p["status"] in P_ARCH}
+    live = {t["id"]: t for t in c["tasks"] if t["id"] and open_task(t) and t["project"] not in arch}
+    next_of = {i: [] for i in live}
+    for i, t in live.items():
+        for d in t["dep"]:
+            if d in live:
+                next_of[d].append(i)
+
+    def reach(start):
+        seen, todo = set(), list(next_of.get(start, []))
+        while todo:
+            n = todo.pop()
+            if n not in seen:
+                seen.add(n)
+                todo += next_of.get(n, [])
+        seen.discard(start)
+        return seen
+    return live, {i: reach(i) for i in live}
+
+
+def brief_data(v, intent, ctx, project=None, as_of=None, expand=False):
     today = datetime.date.fromisoformat(as_of) if as_of else datetime.date.today()
     c = next((x for x in build_model(v)["ctxs"] if x["id"] == ctx), None)
     if c is None:
         raise ValueError("unknown ctx %s" % ctx)
-    human = audience == "human"
-    pname = {p["id"]: p["name"] for p in c["projects"]}
-    arch = {p["id"] for p in c["projects"] if p["status"] in P_ARCH}
     focus = None
     if project:
         focus = next((p for p in c["projects"] if project in (p["slug"], p["id"], p["name"])), None)
         if focus is None:
             raise ValueError("unknown project %s" % project)
-    text_of = {t["id"]: t["text"] for t in c["tasks"]}
-    head = ["# %s %s %s" % (intent, c["name"] if human else ctx, today.isoformat())]
-    want = {"today": {"overdue", "today"}, "week": {"overdue", "today", "week"},
-            "upcoming": {"today", "week", "later"}}.get(intent)
-    rows, order = [], {"overdue": 0, "today": 1, "week": 2, "later": 3, "nodate": 4}
-    if intent != "risks":
-        for t in c["tasks"]:
-            if t["done"] or t["st"] in ("done", "cancelled") or t["project"] in arch:
-                continue
-            if focus and t["project"] != focus["id"]:
-                continue
-            b = bucket(t["due"], today)
-            if want and b not in want:
-                continue
-            rows.append((order[b], t["due"] or "9999", b, t))
-    rows.sort(key=lambda r: r[:2])
-    out = list(head)
-    if rows:
+    live, down = task_graph(c)
+    if intent == "unblock":
+        chosen = sorted((t for t in live.values() if down[t["id"]] and (not focus or t["project"] == focus["id"])),
+                        key=lambda t: (-len(down[t["id"]]), t["due"] or "9999"))[:8]
+        rows = [(bucket(t["due"], today), t, 0, len(down[t["id"]])) for t in chosen]
+    else:
+        want = {"today": {"overdue", "today"}, "week": {"overdue", "today", "week"},
+                "upcoming": {"today", "week", "later"}}.get(intent)
+        order = {"overdue": 0, "today": 1, "week": 2, "later": 3, "nodate": 4}
+        scope = [] if intent == "risks" else [t for t in live.values() if not focus or t["project"] == focus["id"]]
+        groups = {}
+        for t in scope:
+            groups.setdefault(t.get("pkg") or t["id"], []).append(t)
+        rows = []
+        for members in groups.values():
+            members.sort(key=lambda t: t["due"] or "9999")
+            # pkg shows only its active stage unless expanded
+            for t in (members if expand or len(members) == 1 else members[:1]):
+                b = bucket(t["due"], today)
+                if not want or b in want:
+                    rows.append((b, t, 0 if expand else len(members) - 1, len(down[t["id"]])))
+        rows.sort(key=lambda r: (order[r[0]], r[1]["due"] or "9999"))
+    agenda = []
+    if intent in ("today", "week", "upcoming"):
+        lim = {"today": 0, "week": 7}.get(intent)
+        agenda = sorted((a for a in c["agenda"] if a["date"] >= today.isoformat()
+                         and (lim is None or a["date"] <= (today + datetime.timedelta(days=lim)).isoformat())),
+                        key=lambda a: a["date"])
+    risks = []
+    if intent in ("risks", "project"):
+        risks = sorted(((p, r) for p in c["projects"] if p["status"] not in P_ARCH and (not focus or p is focus)
+                        for r in p["risks"]), key=lambda x: -x[1]["sev"])
+    return dict(today=today, c=c, focus=focus, rows=rows, agenda=agenda, risks=risks, down=down,
+                pname={p["id"]: p["name"] for p in c["projects"]},
+                text_of={t["id"]: t["text"] for t in c["tasks"]})
+
+
+def build_brief(v, intent, ctx, project=None, audience="agent", as_of=None, expand=False):
+    """compact projection. agent keeps ids. human has no id, code, path: safe input for the humanizer."""
+    d = brief_data(v, intent, ctx, project, as_of, expand)
+    c, human, pname, text_of = d["c"], audience == "human", d["pname"], d["text_of"]
+    out = ["# %s %s %s" % (intent, c["name"] if human else ctx, d["today"].isoformat())]
+    if d["focus"]:
+        out.append(tsv(["project", d["focus"]["name"], d["focus"]["status"], d["focus"]["due"]]))
+    if d["rows"]:
+        out.append(tsv(["when", "task", "owner", "date", "state", "project", "waits_on", "stages_left", "unblocks"] if human
+                       else ["b", "id", "text", "owner", "due", "pri", "st", "prj", "dep", "stages_left", "unblocks"]))
+    for b, t, more, unblocks in d["rows"]:
         if human:
-            out.append(tsv(["when", "task", "owner", "date", "state", "project", "waits_on"]))
-        else:
-            out.append(tsv(["b", "id", "text", "owner", "due", "pri", "st", "prj", "dep"]))
-    for _, _, b, t in rows:
-        if human:
-            deps = "; ".join(clean(text_of.get(d, "")) for d in t["dep"] if d in text_of)
+            deps = "; ".join(clean(text_of.get(x, "")) for x in t["dep"] if x in text_of)
             out.append(tsv([b, clean(t["text"]), t["owner"], day(t["due"]), ST_HUMAN.get(t["st"], ""),
-                            pname.get(t["project"], ""), deps]))
+                            pname.get(t["project"], ""), deps, more or "", unblocks or ""]))
         else:
             out.append(tsv([b, t["id"], t["text"], t["owner"], t["due"], t["pri"], t["st"], t["project"],
-                            ",".join(t["dep"])]))
-    if want and intent != "pending":
-        lim = {"today": 0, "week": 7}.get(intent)
-        ag = [a for a in c["agenda"] if a["date"] >= today.isoformat()
-              and (lim is None or a["date"] <= (today + datetime.timedelta(days=lim)).isoformat())]
-        if ag:
-            out.append("# agenda")
-            out += [tsv([day(a["date"]), clean(a["text"])] if human else [a["date"], a["text"], a["ref"]])
-                    for a in sorted(ag, key=lambda a: a["date"])]
-    if intent in ("risks", "project"):
-        rk = [(p, r) for p in c["projects"] if p["status"] not in P_ARCH and (not focus or p is focus) for r in p["risks"]]
-        if rk:
-            out.append("# risks")
-            for p, r in sorted(rk, key=lambda x: -x[1]["sev"]):
-                out.append(tsv([p["name"], clean(r["risk"]), r["sev"], clean(r["mitigation"]), r["owner"]] if human
-                               else [p["name"], r["risk"], r["sev"], r["mitigation"], r["owner"], r["id"]]))
-    if intent == "project" and focus:
-        out.insert(1, tsv(["project", focus["name"], focus["status"], focus["due"]]))
+                            ",".join(t["dep"]), more or "", unblocks or ""]))
+    if d["agenda"]:
+        out.append("# agenda")
+        out += [tsv([day(a["date"]), clean(a["text"])] if human else [a["date"], a["text"], a["ref"]]) for a in d["agenda"]]
+    if d["risks"]:
+        out.append("# risks")
+        for p, r in d["risks"]:
+            out.append(tsv([p["name"], clean(r["risk"]), r["sev"], clean(r["mitigation"]), r["owner"]] if human
+                           else [p["name"], r["risk"], r["sev"], r["mitigation"], r["owner"], r["id"]]))
     return "\n".join(out)
 
 
 def cmd_brief(v, a):
     try:
-        print(build_brief(v, a.intent, a.ctx, a.project, a.audience, a.as_of))
+        print(build_brief(v, a.intent, a.ctx, a.project, a.audience, a.as_of, a.expand))
     except ValueError as e:
         print("ERR", e)
         return 1
@@ -765,98 +814,269 @@ def find_tasks(v, ctx, tid=None, match=None):
     return [items[i] for s, i in scored if s >= 0.5]
 
 
-def set_field(line, key, val):
-    pat = re.compile(r" \| %s:[^|]*?(?= \||\s*$)" % re.escape(key))
-    if pat.search(line):
-        return pat.sub(lambda _: " | %s:%s" % (key, val), line, count=1)
-    return line.rstrip() + " | %s:%s" % (key, val)
+def seg_key(seg):
+    s = seg.strip()
+    if s.startswith("@"):
+        return "@"
+    return s.split(":", 1)[0].strip() if ":" in s else None
+
+
+def seg_index(segs, key):
+    return next((i for i, s in enumerate(segs) if i and seg_key(s) == key), -1)
+
+
+def set_seg(segs, key, val, after=()):
+    """replace in place keeping spacing; else insert after the first key found in `after`; else append."""
+    i = seg_index(segs, key)
+    if i >= 0:
+        m = re.match(r"^(\s*%s\s*:\s*)(.*?)(\s*)$" % re.escape(key), segs[i])
+        segs[i] = m.group(1) + val + m.group(3)
+        return
+    for k in after:
+        j = seg_index(segs, k)
+        if j >= 0:
+            segs.insert(j + 1, "%s:%s" % (key, val))
+            return
+    segs.append("%s:%s" % (key, val))
+
+
+def edit_line(line, op, a):
+    segs = line.split(" | ")
+    if op == "done":
+        segs[0] = re.sub(r"^(\s*- \[) (\].*)$", r"\1x\2", segs[0])
+        set_seg(segs, "st", "done")
+    elif op == "cancel":
+        set_seg(segs, "st", "cancelled")
+    if op in ("due", "update") and a.due:
+        set_seg(segs, "due", a.due, ("@", "id"))
+    if op == "update" and a.pri:
+        set_seg(segs, "pri", a.pri, ("due", "@", "id"))
+    if op == "set":
+        if a.pkg:
+            set_seg(segs, "pkg", a.pkg)
+        if a.stage:
+            set_seg(segs, "stage", a.stage)
+    return " | ".join(segs)
+
+
+def read_raw(path):
+    with open(path, encoding="utf-8", newline="") as f:
+        return f.read()
 
 
 def atomic_write(path, content):
-    """temp+rename so a sync client never sees a partial file"""
-    tmp = path.with_name(path.name + ".pa-tmp")
-    tmp.write_text(content, encoding="utf-8")
+    """temp+rename so a sync client never sees a partial file. keeps mode and line endings."""
+    tmp = path.with_name(".%s.pa-tmp-%d" % (path.name, os.getpid()))
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+    if path.exists():
+        os.chmod(tmp, path.stat().st_mode & 0o777)
     os.replace(tmp, path)
 
 
-def atomic_edit(path, fn):
-    atomic_write(path, fn(path.read_text(encoding="utf-8")))
+def swap_line(raw, n, before, after):
+    """replace 1-based line n only if it still equals `before`. other bytes untouched."""
+    parts = re.split(r"(\r\n|\n)", raw)
+    i = (n - 1) * 2
+    if i >= len(parts) or parts[i] != before:
+        return None
+    parts[i] = after
+    return "".join(parts)
 
 
-def report_validate(v):
+def inside_vault(v, rel_path):
+    """(path, None) or (None, reason). refuses absolute, parent and symlink escapes."""
+    if "\0" in rel_path or os.path.isabs(rel_path) or ".." in Path(rel_path).parts:
+        return None, "boundary"
+    try:
+        real = (v.root / rel_path).resolve(strict=True)
+    except OSError:
+        return None, "file_changed"
+    if v.root.resolve() not in real.parents:
+        return None, "boundary"
+    return real, None
+
+
+def validate_errors(v):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         code = cmd_validate(Vault(v.root), None)
+    return code, [l for l in buf.getvalue().splitlines() if l.startswith("ERR")]
+
+
+def commit(v, edits):
+    """all-or-nothing: snapshot, write, validate, restore on failure. edits = {path: new content}."""
+    snapshots = {p: read_raw(p) for p in edits}
+    try:
+        for p, content in edits.items():
+            atomic_write(p, content)
+        code, errs = validate_errors(v)
+    except Exception:
+        for p, content in snapshots.items():
+            atomic_write(p, content)
+        raise
     if code:
-        print("VALIDATE_ERRORS\n" + "\n".join(l for l in buf.getvalue().splitlines() if l.startswith("ERR")))
-    return code
+        for p, content in snapshots.items():
+            atomic_write(p, content)
+    return errs if code else []
+
+
+APPLY_EXIT = {"validation_failed": 1, "invalid_edit": 1, "ambiguous": 3, "not_found": 4, "file_changed": 6,
+              "boundary": 7, "not_open": 8, "duplicate": 10}
+
+
+def apply_result(a, kind=None, message="", record=None, preview=None, sync=None, matches=None):
+    code = APPLY_EXIT[kind] if kind else 0
+    if a.json:
+        print(json.dumps({"ok": not kind, "kind": kind, "message": message, "applied": bool(a.yes and not kind),
+                          "preview": preview, "record": record, "todoist": sync or [], "matches": matches or []},
+                         ensure_ascii=False))
+        return code
+    if kind:
+        print({"ambiguous": "AMBIGUOUS", "not_found": "NOT_FOUND", "duplicate": "MATCH", "file_changed": "FILE_CHANGED",
+               "boundary": "BOUNDARY", "not_open": "NOT_OPEN", "validation_failed": "VALIDATE_ERRORS"}.get(kind, "ERR"), message)
+        for m in matches or []:
+            print(m)
+        return code
+    print("APPLIED" if a.yes else "PREVIEW", preview)
+    for s in sync or []:
+        print("TODOIST_SYNC", s)
+    return 0
 
 
 def cmd_apply(v, a):
-    """dry-run unless --yes. preview text is built from the operation, never by a model."""
+    """dry-run unless --yes. preview text is built from the operation, never by a model. single vault writer."""
     es = a.lang == "es"
     if a.ctx not in v.contexts:
-        print("ERR unknown ctx", a.ctx)
-        return 1
-    if a.due and not ISO.match(a.due):
-        print("ERR bad date", a.due)
-        return 1
+        return apply_result(a, "invalid_edit", "unknown ctx %s" % a.ctx)
+    if a.due and not iso_ok(a.due):
+        return apply_result(a, "invalid_edit", "bad date %s" % a.due)
+    if a.op == "undo":
+        return apply_undo(v, a)
     if a.op == "add":
-        if not a.text:
-            print("ERR add needs --text")
-            return 1
-        lines, found = match_report(v, a.ctx, a.text)
-        if found and not a.force:
-            print("MATCH\n" + "\n".join(lines))
-            return 10
-        path = v.root / a.ctx / ("tracker.md" if not a.project else "Projects/%s/actions.md" % a.project)
-        if (a.project and a.project != slug(a.project)) or not path.exists():
-            print("ERR no target for project", a.project)
-            return 1
-        msg = ('Agregar "%s" (%s)' if es else 'Add "%s" (%s)') % (a.text, nat_date(a.due, a.lang))
-        print("PREVIEW" if not a.yes else "APPLIED", msg)
-        if a.yes:
-            parts = [a.text, "id:" + next_id(v)] + (["@" + a.owner] if a.owner else []) \
-                + (["due:" + a.due] if a.due else []) + (["pri:" + a.pri] if a.pri else []) \
-                + (["kind:%s" % a.kind, "topic:%s" % a.topic] if not a.project and a.kind and a.topic else []) + ["st:confirmed"]
-            atomic_edit(path, lambda s: s.rstrip("\n") + "\n- [ ] " + " | ".join(parts) + "\n")
-            return 1 if report_validate(v) else 0
-        return 0
+        return apply_add(v, a, es)
     hits = find_tasks(v, a.ctx, a.task, a.match)
     if len(hits) != 1:
-        print("AMBIGUOUS" if hits else "NOT_FOUND")
-        for x in hits[:5]:
-            print(tsv([x["t"].get("id"), x["t"]["text"], x["t"].get("due")]))
-        return 3 if hits else 4
+        rows = [tsv([x["t"].get("id"), x["t"]["text"], x["t"].get("due")]) for x in hits[:5]]
+        return apply_result(a, "ambiguous" if hits else "not_found", matches=rows)
     x = hits[0]
     t, n = x["t"], x["line"]
-
-    def change(line):
-        if a.op == "done":
-            return set_field(line.replace("- [ ]", "- [x]", 1), "st", "done")
-        if a.op == "cancel":
-            return set_field(line, "st", "cancelled")
-        return set_field(line, "due", a.due)
-    if a.op == "due" and not a.due:
-        print("ERR due needs --due")
-        return 1
+    if a.op == "merge":
+        return apply_merge(v, a, x, es)
+    if a.op != "set" and (t["done"] or t.get("st") in ("done", "cancelled")):
+        return apply_result(a, "not_open", "task is not open")
+    if (a.op == "due" and not a.due) or (a.op == "update" and not (a.due or a.pri)) \
+            or (a.op == "set" and not (a.pkg or a.stage)):
+        return apply_result(a, "invalid_edit", "missing value for %s" % a.op)
+    raw = read_raw(x["file"])
+    before = re.split(r"\r\n|\n", raw)[n - 1]
+    after = edit_line(before, a.op, a)
     msg = {"done": ('Marcar como hecha: "%s"' if es else 'Mark as done: "%s"') % t["text"],
            "cancel": ('Cancelar: "%s"' if es else 'Cancel: "%s"') % t["text"],
+           "set": ('Agrupar "%s"' if es else 'Group "%s"') % t["text"],
+           "update": ('Actualizar "%s"' if es else 'Update "%s"') % t["text"],
            "due": ('Mover "%s" de %s a %s' if es else 'Move "%s" from %s to %s')
-           % (t["text"], nat_date(t.get("due"), a.lang), nat_date(a.due, a.lang))}[a.op]
-    print("PREVIEW" if not a.yes else "APPLIED", msg)
-    if a.yes:
-        def edit(s):
-            ls = s.split("\n")
-            if parse_task(ls[n - 1] if n <= len(ls) else "") is None or parse_task(ls[n - 1]).get("id") != t.get("id"):
-                raise RuntimeError("file changed underneath")
-            ls[n - 1] = change(ls[n - 1])
-            return "\n".join(ls)
-        atomic_edit(x["file"], edit)
-        if t.get("td"):
-            print("TODOIST_SYNC", t["td"])
-        return 1 if report_validate(v) else 0
-    return 0
+           % (t["text"], nat_date(t.get("due"), a.lang), nat_date(a.due, a.lang)) if a.due else ""}[a.op]
+    record = {"taskId": t.get("id"), "file": rel(v, x["file"]), "line": n, "before": before, "after": after, "kind": a.op}
+    if not a.yes:
+        return apply_result(a, preview=msg, record=record)
+    errs = commit(v, {x["file"]: swap_line(raw, n, before, after)})
+    if errs:
+        return apply_result(a, "validation_failed", "restored", matches=errs)
+    return apply_result(a, preview=msg, record=record, sync=[t["td"]] if t.get("td") else [])
+
+
+def apply_undo(v, a):
+    path, why = inside_vault(v, a.file or "")
+    if why or not a.line or a.before is None or a.after is None:
+        return apply_result(a, why or "invalid_edit", "bad undo target")
+    raw = read_raw(path)
+    next_raw = swap_line(raw, a.line, a.after, a.before)
+    if next_raw is None:
+        return apply_result(a, "file_changed", "line changed since the edit")
+    record = {"file": a.file, "line": a.line, "before": a.after, "after": a.before, "kind": "undo"}
+    if not a.yes:
+        return apply_result(a, preview="undo", record=record)
+    errs = commit(v, {path: next_raw})
+    return apply_result(a, "validation_failed", "restored", matches=errs) if errs else apply_result(a, preview="undo", record=record)
+
+
+def apply_add(v, a, es):
+    if not a.text:
+        return apply_result(a, "invalid_edit", "add needs --text")
+    if a.project and a.project != slug(a.project):
+        return apply_result(a, "boundary", "bad project")
+    path = v.root / a.ctx / ("tracker.md" if not a.project else "Projects/%s/actions.md" % a.project)
+    if not path.exists():
+        return apply_result(a, "file_changed", "no target %s" % (a.project or "tracker"))
+    lines, found = match_report(v, a.ctx, a.text)
+    if found and not a.force:
+        return apply_result(a, "duplicate", matches=lines)
+    msg = ('Agregar "%s" (%s)' if es else 'Add "%s" (%s)') % (a.text, nat_date(a.due, a.lang))
+    if not a.yes:
+        return apply_result(a, preview=msg)
+    tid = next_id(v)
+    parts = [a.text, "id:" + tid] + (["@" + a.owner] if a.owner else []) + (["due:" + a.due] if a.due else []) \
+        + (["pri:" + a.pri] if a.pri else []) + (["kind:%s" % a.kind] if not a.project and a.kind else []) \
+        + (["topic:%s" % a.topic] if not a.project and a.topic else []) \
+        + (["pkg:%s" % a.pkg] if a.pkg else []) + (["stage:%s" % a.stage] if a.stage else []) + ["st:confirmed"]
+    raw = read_raw(path)
+    errs = commit(v, {path: raw.rstrip("\r\n") + ("\r\n" if "\r\n" in raw else "\n") + "- [ ] " + " | ".join(parts)
+                      + ("\r\n" if "\r\n" in raw else "\n")})
+    if errs:
+        return apply_result(a, "validation_failed", "restored", matches=errs)
+    return apply_result(a, preview=msg, record={"taskId": tid, "file": rel(v, path), "kind": "add"})
+
+
+def apply_merge(v, a, keep, es):
+    """keep the task; drop --into-from: cancelled + dup_of, its deps move to keep, dependents re-pointed. lines stay."""
+    if not a.drop or a.drop == keep["t"].get("id"):
+        return apply_result(a, "invalid_edit", "merge needs a different --drop")
+    gone = next((x for x in v.tasks(a.ctx) if x["t"].get("id") == a.drop), None)
+    if gone is None:
+        return apply_result(a, "not_found", "unknown --drop")
+    kid, did = keep["t"]["id"], a.drop
+    msg = ('Fusionar "%s" dentro de "%s"' if es else 'Merge "%s" into "%s"') % (gone["t"]["text"], keep["t"]["text"])
+    new = {}
+
+    def line_edit(path, n, fn):
+        raw = new.get(path, read_raw(path))
+        before = re.split(r"\r\n|\n", raw)[n - 1]
+        new[path] = swap_line(raw, n, before, fn(before))
+
+    def deps_of(t):
+        return [x for x in t.get("dep", "").split(",") if x]
+
+    def with_deps(line, deps):
+        segs = line.split(" | ")
+        if deps:
+            set_seg(segs, "dep", ",".join(deps))
+        elif seg_index(segs, "dep") >= 0:
+            segs.pop(seg_index(segs, "dep"))
+        return " | ".join(segs)
+    merged = [x for x in dict.fromkeys(deps_of(keep["t"]) + deps_of(gone["t"])) if x not in (kid, did)]
+    line_edit(keep["file"], keep["line"], lambda l: with_deps(l, merged))
+
+    def drop_line(l):
+        segs = with_deps(l, []).split(" | ")
+        set_seg(segs, "st", "cancelled")
+        segs.append("dup_of:" + kid)
+        return " | ".join(segs)
+    line_edit(gone["file"], gone["line"], drop_line)
+    moved = 0
+    for x in v.tasks(a.ctx):
+        i = x["t"].get("id")
+        if i not in (kid, did) and did in deps_of(x["t"]):
+            deps = [kid if d == did else d for d in deps_of(x["t"])]
+            line_edit(x["file"], x["line"], lambda l, ds=list(dict.fromkeys(deps)): with_deps(l, ds))
+            moved += 1
+    record = {"taskId": kid, "dropped": did, "dependents": moved, "kind": "merge"}
+    if not a.yes:
+        return apply_result(a, preview=msg, record=record)
+    errs = commit(v, new)
+    if errs:
+        return apply_result(a, "validation_failed", "restored", matches=errs)
+    return apply_result(a, preview=msg, record=record, sync=[gone["t"]["td"]] if gone["t"].get("td") else [])
 
 
 PREFS = Path(".pro-assistant/prefs.tsv")
@@ -865,7 +1085,7 @@ PREF_KEYS = {"length": ("short", "normal"), "format": ("auto", "table", "list"),
 PREF_DEFAULT = {"length": "short", "format": "auto", "diagrams": "auto", "lang": "auto", "tone": "direct"}
 DIAGRAM_MAX = 12
 LEAKS = [("task id", r"\bT-\d+"), ("project id", r"\bPRJ-[A-Z0-9_]+"), ("decision/risk id", r"\b[DR]-\d+"),
-         ("raw field", r"\b(?:id|st|td|dep|src|pri|due|ctx|sev|kind|topic):\S"), ("contract", r"\bcontract:\s*v\d"),
+         ("raw field", r"\b(?:id|st|td|dep|src|pri|due|ctx|sev|kind|topic):\S"), 
          ("file path", r"(?:^|[\s(`])[\w./~-]*\.(?:md|py|tsv|json|html)\b"), ("abs path", r"(?:^|\s)(?:~|/Users|/private)/\S+"),
          ("iso date", r"\b\d{4}-\d{2}-\d{2}\b"), ("tool name", r"\bpa\.py\b|\bvault\b|\bfrontmatter\b")]
 
@@ -1011,6 +1231,196 @@ def cmd_lint_output(v, a):
     return 1 if errs else 0
 
 
+ALIAS = {"st": "staging", "prod": "production", "docs": "doc", "tests": "test"}
+NOISE = {"plan", "new", "blocked", "pending", "task"}
+
+
+def iso_ok(s):
+    if not ISO.match(s or ""):
+        return False
+    try:
+        datetime.date.fromisoformat(s)
+        return True
+    except ValueError:
+        return False
+
+
+def task_shape(text):
+    """(first word, stem set, digit tokens). digit tokens separate S23 from S24, phase 1 from phase 2."""
+    words = re.sub(r"[^a-z0-9 ]+", " ", text.lower()).split()
+    if not words:
+        return "", set(), set()
+    stem = {ALIAS.get(w, w) for w in words[1:]} - STOP - NOISE
+    return words[0], stem, {w for w in stem if re.search(r"\d", w)}
+
+
+def compare_tasks(a, b):
+    """('dup'|'stage', jaccard) or None. dup = same verb same work. stage = other verb on same work."""
+    va, sa, na = task_shape(a["text"])
+    vb, sb, nb = task_shape(b["text"])
+    if not sa or not sb or na != nb:
+        return None
+    j = len(sa & sb) / len(sa | sb)
+    if j < 0.6:
+        return None
+    return ("dup" if va == vb else "stage"), j
+
+
+def find_dupes(tasks):
+    out = []
+    for i, a in enumerate(tasks):
+        for b in tasks[i + 1:]:
+            if a.get("pkg") and a.get("pkg") == b.get("pkg"):
+                continue
+            hit = compare_tasks(a, b)
+            if hit:
+                same = a["owner"] == b["owner"] and a["due"] == b["due"]
+                out.append(dict(kind=hit[0], score=round(hit[1], 2), same_owner_due=same, a=a, b=b))
+    return sorted(out, key=lambda d: (d["kind"] != "dup", not d["same_owner_due"], -d["score"]))
+
+
+def cmd_dupes(v, a):
+    rows = []
+    for c in build_model(v)["ctxs"]:
+        if a.ctx and c["id"] != a.ctx:
+            continue
+        live, _ = task_graph(c)
+        for d in find_dupes(list(live.values())):
+            if d["kind"] == "stage" and not a.stages:
+                continue
+            rows.append(d)
+            print(tsv([d["kind"], d["score"], "same" if d["same_owner_due"] else "diff", d["a"]["id"], d["b"]["id"],
+                       d["a"]["text"], d["b"]["text"]]))
+    if not rows:
+        print("NONE")
+    return 0
+
+
+def cmd_graph(v, a):
+    c = next((x for x in build_model(v)["ctxs"] if x["id"] == a.ctx), None)
+    if c is None:
+        print("ERR unknown ctx", a.ctx)
+        return 1
+    live, down = task_graph(c)
+    if a.of:
+        if a.of not in live:
+            print("NOT_OPEN", a.of)
+            return 4
+        t = live[a.of]
+        print(tsv(["task", a.of, t["text"], t["owner"], t["due"], t["st"]]))
+        print(tsv(["waits_on"] + [x for x in t["dep"] if x in live]))
+        print(tsv(["unblocks"] + sorted(down[a.of])))
+        print(tsv(["rel"] + [x for x in (t.get("rel") or "").split(",") if x]))
+        own = rel(v, v.root / t["file"])
+        cited = sorted({rel(v, p) for p in (v.root / a.ctx).rglob("*.md")
+                        if re.search(r"\b%s\b" % re.escape(a.of), p.read_text(encoding="utf-8")) and rel(v, p) != own})
+        print(tsv(["cited_in"] + cited))
+        return 0
+    for t in sorted(live.values(), key=lambda t: -len(down[t["id"]]))[:a.top]:
+        if down[t["id"]]:
+            print(tsv([len(down[t["id"]]), t["id"], t["text"], t["owner"], t["due"], t["st"]]))
+    return 0
+
+
+DAYS = {"es": "lun mar mié jue vie sáb dom".split(), "en": "Mon Tue Wed Thu Fri Sat Sun".split()}
+LABELS = {
+    "es": dict(overdue="Vencida", today="Hoy", week="Esta semana", later="Más adelante", nodate="Sin fecha", task="Tarea",
+               owner="Responsable", date="Fecha", state="Estado", project="Proyecto", when="Cuándo", none="sin responsable",
+               nothing="No tienes nada registrado para esta consulta.", more="y %d más", next="Siguiente paso: %s",
+               unlocks=" (libera %d)", agenda="Agenda", risks="Riesgos", risk="Riesgo", sev="Severidad", resp="Respuesta",
+               high="alta", med="media", low="baja", stages=" (+%d etapas)", frees="Libera", waits="Espera a",
+               lead_today="%d vencidas y %d para hoy.", target="Objetivo: %s.", unconfirmed="sin confirmar", pending="pendiente",
+               progress="en curso", blocked="bloqueada", active="activo", paused="pausado", future="futuro"),
+    "en": dict(overdue="Overdue", today="Today", week="This week", later="Later", nodate="No date", task="Task",
+               owner="Owner", date="Date", state="State", project="Project", when="When", none="no owner",
+               nothing="Nothing recorded for this question.", more="and %d more", next="Next step: %s",
+               unlocks=" (frees %d)", agenda="Agenda", risks="Risks", risk="Risk", sev="Severity", resp="Response",
+               high="high", med="medium", low="low", stages=" (+%d stages)", frees="Frees", waits="Waits on",
+               lead_today="%d overdue and %d due today.", target="Target: %s.", unconfirmed="unconfirmed", pending="pending",
+               progress="in progress", blocked="blocked", active="active", paused="paused", future="future")}
+
+
+def nat_day(iso, lang):
+    return "%s %s" % (DAYS[lang][datetime.date.fromisoformat(iso).weekday()], nat_date(iso, lang)) if iso else ""
+
+
+def speak(text, lang):
+    """free text for people: no internal refs, ISO dates spoken."""
+    return re.sub(r"\b\d{4}-\d{2}-\d{2}\b", lambda m: nat_date(m.group(0), lang) if iso_ok(m.group(0)) else "", clean(text))
+
+
+def table(head, rows):
+    cell = lambda x: str(x).replace("|", "/")
+    return "\n".join(["| %s |" % " | ".join(head), "|" + "---|" * len(head)] + ["| %s |" % " | ".join(cell(x) for x in r) for r in rows])
+
+
+def render_answer(v, intent, ctx, project=None, lang="es", as_of=None):
+    """deterministic answer: no model, so no invented facts. task text stays as stored."""
+    prefs = read_prefs(v)
+    d = brief_data(v, intent, ctx, project, as_of)
+    L, rows, out = LABELS[lang], d["rows"], []
+    state = {"proposed": L["unconfirmed"], "confirmed": L["pending"], "doing": L["progress"], "blocked": L["blocked"]}
+    if d["focus"]:
+        out.append("%s: %s.%s" % (d["focus"]["name"], L.get(d["focus"]["status"], d["focus"]["status"]),
+                                  " " + L["target"] % nat_date(d["focus"]["due"], lang) if d["focus"]["due"] else ""))
+    if intent == "today" and rows:
+        out.append(L["lead_today"] % (sum(r[0] == "overdue" for r in rows), sum(r[0] == "today" for r in rows)))
+    cap = 8 if prefs["length"] == "short" else len(rows)
+    shown = []
+    for b, t, more, frees in rows[:cap]:
+        text = speak(t["text"], lang) + (L["stages"] % more if more else "")
+        shown.append([L[b], text, t["owner"] or L["none"], nat_day(t["due"], lang) or "-", state.get(t["st"], "-")]
+                     + ([d["pname"].get(t["project"], "-")] if not d["focus"] else []) + ([frees] if intent == "unblock" else []))
+    if shown:
+        head = [L["when"], L["task"], L["owner"], L["date"], L["state"]] + ([L["project"]] if not d["focus"] else []) \
+            + ([L["frees"]] if intent == "unblock" else [])
+        if prefs["format"] == "list":
+            out.append("\n".join("- " + " · ".join(str(x) for x in r if x != "-") for r in shown))
+        else:
+            out.append(table(head, shown))
+        if len(rows) > cap:
+            out.append(L["more"] % (len(rows) - cap) + ".")
+    if d["agenda"]:
+        out.append("%s:\n%s" % (L["agenda"], "\n".join("- %s: %s" % (nat_day(a["date"], lang), speak(a["text"], lang)) for a in d["agenda"])))
+    if d["risks"]:
+        word = lambda s: L["high"] if s >= 15 else L["med"] if s >= 8 else L["low"]
+        out.append(table([L["risk"], L["sev"], L["resp"], L["owner"]] + ([L["project"]] if not d["focus"] else []),
+                         [[speak(r["risk"], lang), word(r["sev"]), speak(r["mitigation"], lang), r["owner"] or L["none"]]
+                          + ([p["name"]] if not d["focus"] else []) for p, r in d["risks"][:cap]]))
+    if prefs["diagrams"] == "auto" and intent in ("project", "pending", "risks"):
+        dg, _ = build_diagram(v, ctx, project if intent == "project" else None)
+        if dg:
+            out.append("```mermaid\n%s\n```" % dg)
+    if not out or (intent in ("today", "week", "upcoming", "pending", "unblock") and not rows and not d["agenda"]):
+        return L["nothing"]
+    cand = [r for r in rows if r[0] in ("overdue", "today")] or (rows if intent == "unblock" else [])
+    if cand:
+        top = max(cand, key=lambda r: r[3])
+        out.append(L["next"] % speak(top[1]["text"], lang) + (L["unlocks"] % top[3] if top[3] else "") + ".")
+    return "\n\n".join(out)
+
+
+def cmd_ask(v, a):
+    """single read entry. no --question: Python answers. with --question: payload for the subagent."""
+    prefs = read_prefs(v)
+    lang = a.lang or (prefs["lang"] if prefs["lang"] != "auto" else None) or \
+        (owner_field(v, "chat_lang") if owner_field(v, "chat_lang") in ("es", "en") else "es")
+    try:
+        if not a.question:
+            print("ROUTE direct\n")
+            print(render_answer(v, a.intent, a.ctx, a.project, lang, a.as_of))
+            return 0
+        payload = build_compose(v, a.intent, a.ctx, a.project, a.as_of)
+    except ValueError as e:
+        print("ERR", e)
+        return 1
+    fd, path = tempfile.mkstemp(prefix="pa-payload-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(payload)
+    print("ROUTE subagent\nPAYLOAD_FILE %s\n\nPregunta del usuario: %s\n\n%s" % (path, a.question, payload))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(prog="pa.py")
     ap.add_argument("--vault")
@@ -1049,8 +1459,31 @@ def main():
     p.add_argument("--project")
     p.add_argument("--audience", default="agent", choices=["agent", "human"])
     p.add_argument("--as-of")
+    p.add_argument("--expand", action="store_true")
+    p = sp.add_parser("ask")
+    p.add_argument("intent", choices=INTENTS)
+    p.add_argument("--ctx", required=True)
+    p.add_argument("--project")
+    p.add_argument("--question")
+    p.add_argument("--lang", choices=["es", "en"])
+    p.add_argument("--as-of")
+    p = sp.add_parser("graph")
+    p.add_argument("--ctx", required=True)
+    p.add_argument("--of")
+    p.add_argument("--top", type=int, default=10)
+    p = sp.add_parser("dupes")
+    p.add_argument("--ctx")
+    p.add_argument("--stages", action="store_true")
     p = sp.add_parser("apply")
-    p.add_argument("op", choices=["done", "cancel", "due", "add"])
+    p.add_argument("op", choices=["done", "cancel", "due", "update", "set", "add", "merge", "undo"])
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--drop")
+    p.add_argument("--pkg")
+    p.add_argument("--stage")
+    p.add_argument("--file")
+    p.add_argument("--line", type=int)
+    p.add_argument("--before")
+    p.add_argument("--after")
     p.add_argument("--ctx", required=True)
     p.add_argument("--task")
     p.add_argument("--match")
@@ -1089,7 +1522,7 @@ def main():
     fn = {"init": cmd_init, "sync": cmd_sync, "validate": cmd_validate, "next-id": cmd_next_id,
           "check": cmd_check, "new-project": cmd_new_project, "upgrade": cmd_upgrade, "model": cmd_model, "view": cmd_view,
           "open": cmd_open, "brief": cmd_brief, "apply": cmd_apply, "compose": cmd_compose,
-          "prefs": cmd_prefs, "lint-output": cmd_lint_output}[a.cmd]
+          "prefs": cmd_prefs, "lint-output": cmd_lint_output, "ask": cmd_ask, "graph": cmd_graph, "dupes": cmd_dupes}[a.cmd]
     return fn(v, a)
 
 

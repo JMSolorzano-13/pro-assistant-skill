@@ -1,7 +1,7 @@
 ---
 type: config
 schema: 2
-skill_version: 0.3.0
+skill_version: 0.5.0
 contexts: [acme-corp, personal]
 todoist: off
 promote_after: 3

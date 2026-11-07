@@ -120,7 +120,7 @@ class TestHumanizer(Base):
         return r.returncode, r.stdout
 
     def test_lint_catches_leaks(self):
-        for bad in ("Revisa T-0002", "ver PRJ-ALFA", "en actions.md", "st:done", "contract: v1", "el 2026-10-20", "usa pa.py"):
+        for bad in ("Revisa T-0002", "ver PRJ-ALFA", "en actions.md", "st:done", "el 2026-10-20", "usa pa.py"):
             self.assertEqual(self.lint(bad)[0], 1, bad)
 
     def test_lint_accepts_natural_text(self):
@@ -154,6 +154,106 @@ class TestHumanizer(Base):
         self.assertIn("length=normal", run(self.v, "prefs", "show")[1])
         run(self.v, "prefs", "undo", "--yes")
         self.assertIn("length=short", run(self.v, "prefs", "show")[1])
+        self.assertEqual(run(self.v, "validate")[0], 0)
+
+
+class TestEngine(Base):
+    F = "acme-corp/Projects/alfa-migration/actions.md"
+
+    def add_tasks(self, *lines):
+        f = self.v / self.F
+        f.write_text(f.read_text() + "".join(l + "\n" for l in lines))
+
+    def test_dupes_separates_real_dup_from_stage(self):
+        self.add_tasks("- [ ] Promote Alfa S24 ST and prod | id:T-0090 | @ana | due:2026-12-18 | pri:med | st:confirmed",
+                       "- [ ] Promote Alfa S24 Staging and production | id:T-0091 | @ana | due:2026-12-18 | pri:med | st:confirmed",
+                       "- [ ] Close Alfa S24 Staging and production | id:T-0092 | @ana | due:2026-12-20 | pri:med | st:confirmed",
+                       "- [ ] Promote Alfa S25 Staging and production | id:T-0093 | @ana | due:2026-12-18 | pri:med | st:confirmed")
+        out = run(self.v, "dupes", "--ctx", "acme-corp")[1]
+        self.assertIn("T-0090\tT-0091", out)
+        self.assertNotIn("T-0092", out)
+        self.assertNotIn("T-0093", out)
+        self.assertIn("T-0092", run(self.v, "dupes", "--ctx", "acme-corp", "--stages")[1])
+
+    def test_graph_impact_counts_transitive_open_tasks(self):
+        out = run(self.v, "graph", "--ctx", "acme-corp")[1]
+        self.assertEqual(out.splitlines()[0].split("\t")[:2], ["4", "T-0001"])
+
+    def test_graph_of_reports_both_directions(self):
+        out = run(self.v, "graph", "--ctx", "acme-corp", "--of", "T-0002")[1]
+        self.assertIn("waits_on\tT-0001", out)
+        self.assertIn("unblocks\tT-0003\tT-0004", out)
+
+    def test_pkg_collapses_to_active_stage(self):
+        self.add_tasks("- [ ] Confirm Alfa X | id:T-0090 | @ana | due:2026-11-01 | pri:med | pkg:alfa-x | stage:confirm | st:confirmed",
+                       "- [ ] Close Alfa X | id:T-0091 | @ana | due:2026-11-03 | pri:med | pkg:alfa-x | stage:close | st:confirmed")
+        out = run(self.v, "brief", "pending", "--ctx", "acme-corp", "--as-of", "2026-10-20")[1]
+        self.assertIn("T-0090", out)
+        self.assertNotIn("T-0091", out)
+        self.assertIn("T-0091", run(self.v, "brief", "pending", "--ctx", "acme-corp", "--as-of", "2026-10-20", "--expand")[1])
+        self.assertEqual(run(self.v, "validate")[0], 0)
+
+    def test_ask_direct_answer_has_no_codes_in_each_language(self):
+        for lang in ("es", "en"):
+            for intent in ("today", "week", "upcoming", "pending", "risks", "unblock"):
+                out = run(self.v, "ask", intent, "--ctx", "acme-corp", "--lang", lang, "--as-of", "2026-10-20")[1]
+                self.assertTrue(out.startswith("ROUTE direct"))
+                self.assertNotRegex(out, r"\bT-\d+|PRJ-|\.md|\b\d{4}-\d{2}-\d{2}\b")
+
+    def test_ask_with_question_routes_to_subagent(self):
+        out = run(self.v, "ask", "pending", "--ctx", "acme-corp", "--question", "que hago?")[1]
+        self.assertTrue(out.startswith("ROUTE subagent\nPAYLOAD_FILE "))
+        self.assertIn("# template", out)
+
+    def test_apply_refuses_closed_task(self):
+        run(self.v, "apply", "done", "--ctx", "acme-corp", "--task", "T-0002", "--yes")
+        self.assertEqual(run(self.v, "apply", "due", "--ctx", "acme-corp", "--task", "T-0002", "--due", "2026-12-01", "--yes")[0], 8)
+
+    def test_older_skill_version_vault_stays_writable(self):
+        cfg = self.v / ".pro-assistant/config.md"
+        cfg.write_text(cfg.read_text().replace("skill_version: 0.5.0", "skill_version: 0.3.0"))
+        self.assertEqual(run(self.v, "validate")[0], 0)
+        self.assertEqual(run(self.v, "apply", "done", "--ctx", "acme-corp", "--task", "T-0004", "--yes")[0], 0)
+
+    def test_apply_restores_when_validate_fails(self):
+        f = self.v / self.F
+        before = f.read_text()
+        code, _ = run(self.v, "apply", "set", "--ctx", "acme-corp", "--task", "T-0002", "--pkg", "x", "--yes")
+        self.assertEqual(code, 0)
+        f.write_text(before)
+        (self.v / ".pro-assistant/config.md").write_text((self.v / ".pro-assistant/config.md").read_text().replace("schema: 2", "schema: 1"))
+        keep = f.read_bytes()
+        self.assertEqual(run(self.v, "apply", "done", "--ctx", "acme-corp", "--task", "T-0002", "--yes")[0], 1)
+        self.assertEqual(f.read_bytes(), keep)
+
+    def test_apply_keeps_crlf_and_placement(self):
+        f = self.v / self.F
+        f.write_bytes(f.read_bytes().replace(b"\n", b"\r\n"))
+        code, out = run(self.v, "apply", "update", "--ctx", "acme-corp", "--task", "T-0004", "--due", "2026-12-01", "--pri", "high", "--yes", "--json")
+        self.assertEqual(code, 0)
+        rec = json.loads(out)["record"]
+        self.assertEqual(rec["after"], "- [ ] Update runbook | id:T-0004 | @ana | due:2026-12-01 | pri:high | st:confirmed | dep:T-0002")
+        self.assertEqual(f.read_bytes().count(b"\n"), f.read_bytes().count(b"\r\n"))
+
+    def test_undo_roundtrip_and_conflict(self):
+        f = self.v / self.F
+        orig = f.read_bytes()
+        rec = json.loads(run(self.v, "apply", "done", "--ctx", "acme-corp", "--task", "T-0004", "--yes", "--json")[1])["record"]
+        args = ["apply", "undo", "--ctx", "acme-corp", "--file", rec["file"], "--line", str(rec["line"]), "--before", rec["before"], "--after", rec["after"], "--yes"]
+        self.assertEqual(run(self.v, *args)[0], 0)
+        self.assertEqual(f.read_bytes(), orig)
+        self.assertEqual(run(self.v, *args)[0], 6)
+
+    def test_undo_refuses_escape(self):
+        self.assertEqual(run(self.v, "apply", "undo", "--ctx", "acme-corp", "--file", "../x.md", "--line", "1", "--before", "a", "--after", "b", "--yes")[0], 7)
+
+    def test_merge_repoints_dependents_and_keeps_graph_valid(self):
+        code, out = run(self.v, "apply", "merge", "--ctx", "acme-corp", "--task", "T-0004", "--drop", "T-0002", "--yes", "--json")
+        self.assertEqual(code, 0, out)
+        text = (self.v / self.F).read_text()
+        self.assertRegex(text, r"T-0002.*st:cancelled.*dup_of:T-0004")
+        self.assertRegex(text, r"Cutover rehearsal.*dep:T-0004")
+        self.assertRegex(text, r"Update runbook.*dep:T-0001")
         self.assertEqual(run(self.v, "validate")[0], 0)
 
 
