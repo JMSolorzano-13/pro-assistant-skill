@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pro-assistant · view</title>
+<style>
+:root{--bg:#f6f5fb;--card:#fff;--tx:#1c1b29;--mu:#6b6a80;--bd:#d9d6ea;--ok:#16a34a;--wip:#f59e0b;--bad:#dc2626}
+@media (prefers-color-scheme:dark){:root{--bg:#12111c;--card:#1d1b2b;--tx:#efeefa;--mu:#9b99b5;--bd:#3a3657}}
+*{box-sizing:border-box}html,body{margin:0}body{background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+.top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px;background:linear-gradient(135deg,#6d28d9,#2563eb 60%,#0891b2);color:#fff}
+.top h1{margin:0;font-size:clamp(15px,3vw,20px);flex:1;min-width:180px}
+.top button,.pg{background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:10px;padding:6px 11px;font-size:13px;cursor:pointer}
+.pg{font-weight:700;cursor:default}.upd{font-size:12px;opacity:.85}
+.tabs{display:flex;gap:6px;padding:10px 16px 0;flex-wrap:wrap}
+.tabs button{background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:10px 10px 0 0;padding:7px 14px;cursor:pointer;font-size:13px}
+.tabs button.on{background:#6d28d9;color:#fff;border-color:#6d28d9}
+.flt{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;padding:10px 16px;background:var(--card);border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);font-size:12px}
+.flt label{display:flex;gap:4px;align-items:center;color:var(--mu)}
+.flt select,.flt input[type=date],.flt input[type=text]{background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:4px 6px;font-size:12px}
+.flt button{background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:4px 10px;cursor:pointer}
+.chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--bd);border-radius:999px;padding:2px 8px;cursor:pointer;color:var(--tx);background:var(--bg)}
+.lg{display:flex;gap:6px 14px;flex-wrap:wrap;padding:8px 16px;font-size:12px;color:var(--mu);align-items:center}
+.lg i{display:inline-block;width:12px;height:12px;border-radius:4px;vertical-align:-2px;margin-right:4px;border:2px solid}
+.wrap{display:flex;align-items:flex-start}.box{overflow:auto;padding:8px 16px 40px;flex:1;min-width:0}
+#side{width:320px;max-width:42vw;border-left:1px solid var(--bd);background:var(--card);padding:14px;font-size:13px;position:sticky;top:0;max-height:100vh;overflow:auto}
+#side h3{margin:0 0 8px;font-size:15px}#side dt{color:var(--mu);font-size:11px;margin-top:8px;text-transform:uppercase}#side dd{margin:0;word-break:break-word}
+#side button{float:right;border:1px solid var(--bd);background:var(--bg);color:var(--tx);border-radius:8px;cursor:pointer}
+#msg{padding:30px;text-align:center;color:var(--mu)}
+svg text{font-family:inherit;pointer-events:none}
+.n{cursor:pointer}.n:hover rect,.n:hover polygon{filter:brightness(1.08)}
+.e{fill:none;stroke:var(--bd);stroke-width:1.6}.e.ok{stroke:var(--ok)}.e.cr{stroke:#dc2626;stroke-width:2.6}
+.dim .n,.dim .e,.dim .tl{opacity:.15}.dim .hl{opacity:1}
+</style></head><body>
+<header class="top"><h1 id="ttl"></h1><span class="pg" id="pg"></span><span class="upd" id="upd"></span>
+<button id="bm">−</button><button id="bp">+</button><button id="bf"></button><button id="rf">↻</button><button id="lng"></button></header>
+<nav class="tabs" id="tabs"></nav>
+<section class="flt" id="flt"></section>
+<div class="lg" id="lg"></div>
+<div class="wrap"><div class="box" id="box"></div><aside id="side" hidden></aside></div>
+<script>
+const $=id=>document.getElementById(id);
+const I18={es:{ttl:"Asistente Profesional · Vista (solo lectura)",dep:"Dependencias",time:"Línea de tiempo",proj:"Proyectos",all:"Todos",ctx:"Empresa",project:"Proyecto",status:"Estado",owner:"Responsable",pri:"Prioridad",from:"Desde",to:"Hasta",overdue:"Vencidos",crit:"Ruta crítica",arch:"Archivados",search:"Buscar…",reset:"Limpiar",progress:"Avance",updated:"Actualizado",undated:"Sin fecha",today:"hoy",agenda:"Agenda",tracker:"Seguimiento",pending:"Pendiente",doing:"En curso",blocked:"Bloqueado",proposed:"Propuesto",done:"Hecho",waiting:"Espera dependencias",cancelled:"Cancelado",high:"Alta",med:"Media",low:"Baja",nodata:"Sin datos para mostrar con estos filtros",err:"No se pudo leer el vault",fit:"Ajustar",l0:"ARRANQUE",l:"NIVEL",tasks:"tareas",due:"Fecha",start:"Inicio",deps:"Depende de",blocks:"Bloquea",stake:"Interesados",risks:"Riesgos",close:"Cerrar",kind:"Tipo",topic:"Tema",src:"Fuente",file:"Archivo",rev:"Revisado",text:"Texto",id:"ID",sev:"sev",open:"abiertas",hint:"Toca un nodo para ver el detalle",dates:"Fechas",p_today:"Hoy",p_week:"Semana",p_q:"Q actual",p_nq:"Q siguiente"},
+en:{ttl:"Pro Assistant · View (read-only)",dep:"Dependencies",time:"Timeline",proj:"Projects",all:"All",ctx:"Company",project:"Project",status:"Status",owner:"Owner",pri:"Priority",from:"From",to:"To",overdue:"Overdue",crit:"Critical path",arch:"Archived",search:"Search…",reset:"Reset",progress:"Progress",updated:"Updated",undated:"No date",today:"today",agenda:"Agenda",tracker:"Tracker",pending:"Pending",doing:"Doing",blocked:"Blocked",proposed:"Proposed",done:"Done",waiting:"Waiting on deps",cancelled:"Cancelled",high:"High",med:"Medium",low:"Low",nodata:"No data for these filters",err:"Could not read the vault",fit:"Fit",l0:"START",l:"LEVEL",tasks:"tasks",due:"Due",start:"Start",deps:"Depends on",blocks:"Blocks",stake:"Stakeholders",risks:"Risks",close:"Close",kind:"Kind",topic:"Topic",src:"Source",file:"File",rev:"Reviewed",text:"Text",id:"ID",sev:"sev",open:"open",hint:"Click a node for details",dates:"Dates",p_today:"Today",p_week:"Week",p_q:"Current Q",p_nq:"Next Q"}};
+let lang=(navigator.language||"es").slice(0,2)==="en"?"en":"es";const t=k=>I18[lang][k]||k;
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const PAL=["#7c3aed","#db2777","#ea580c","#2563eb","#0891b2","#059669","#ca8a04","#dc2626","#4f46e5","#0d9488"];
+const ST=["pending","doing","blocked","proposed","done"];
+const dd=s=>Date.UTC(+s.slice(0,4),+s.slice(5,7)-1,+s.slice(8,10))/864e5,dbt=(a,b)=>Math.round(dd(b)-dd(a)),addD=(s,n)=>new Date((dd(s)+n)*864e5).toISOString().slice(0,10);
+const defF=()=>({ctx:"",proj:"",st:[],owner:"",pri:"",from:"",to:"",preset:"",overdue:false,crit:false,arch:false,q:""});
+let M=null,tab="dep",z=1,F=defF(),timer=null,TW=1,TH=1,EDGES=[],BASE=null,LK={t:{},p:{}};
+try{const h=JSON.parse(decodeURIComponent(location.hash.slice(1)));if(h.tab)tab=h.tab;if(h.F)F={...defF(),...h.F};if(h.lang)lang=h.lang}catch(e){}
+const saveHash=()=>{try{history.replaceState(null,"","#"+encodeURIComponent(JSON.stringify({tab,F,lang})))}catch(e){}};
+
+function derive(){
+  const all={};let pi=0;LK={t:{},p:{}};
+  M.ctxs.forEach(c=>{c.pmap={};c.projects.forEach(p=>{p.ctx=c.id;p.key=c.id+":"+p.id;p.color=PAL[pi++%PAL.length];p.arch=["obsolete","cancelled","completed"].includes(p.status);c.pmap[p.id]=p;LK.p[p.key]=p});
+    c.tasks.forEach(k=>{k.ctx=c.id;k.proj=k.project?c.pmap[k.project]||null:null;all[k.id]=k;LK.t[k.id]=k;
+      k.cat=(k.done||k.st==="done")?"done":k.st==="cancelled"?"cancelled":k.st==="doing"?"doing":k.st==="blocked"?"blocked":k.st==="proposed"?"proposed":"pending";
+      k.over=!!k.due&&k.cat!=="done"&&k.cat!=="cancelled"&&k.due<M.today;k.color=k.proj?k.proj.color:"#6b6a80";k.bl=[]})});
+  M.ctxs.forEach(c=>c.tasks.forEach(k=>{k.dep.forEach(d=>all[d]&&all[d].bl.push(k.id));k.waiting=k.cat!=="done"&&k.cat!=="cancelled"&&k.dep.some(d=>all[d]&&all[d].cat!=="done")}));
+  M.ctxs.forEach(c=>c.projects.forEach(p=>{const ts=c.tasks.filter(k=>k.project===p.id&&k.cat!=="cancelled");p.tot=ts.length;p.dn=ts.filter(k=>k.cat==="done").length;p.waiting=p.status!=="completed"&&p.dep.some(d=>c.pmap[d]&&c.pmap[d].status!=="completed")}));
+}
+const visT=k=>{if(F.ctx&&k.ctx!==F.ctx)return false;if(F.proj&&(!k.proj||k.proj.key!==F.proj))return false;if(!F.arch&&((k.proj&&k.proj.arch)||k.cat==="cancelled"))return false;
+  if(F.st.length&&!F.st.includes(k.cat))return false;if(F.owner&&k.owner!==F.owner)return false;if(F.pri&&k.pri!==F.pri)return false;
+  if((F.from||F.to)&&(!k.due||(F.from&&k.due<F.from)||(F.to&&k.due>F.to)))return false;if(F.overdue&&!k.over)return false;
+  if(F.q&&!(k.id+" "+k.text+" "+(k.owner||"")+" "+(k.topic||"")).toLowerCase().includes(F.q.toLowerCase()))return false;return true};
+const visP=p=>{if(F.ctx&&p.ctx!==F.ctx)return false;if(F.proj&&p.key!==F.proj)return false;if(!F.arch&&p.arch)return false;if(F.pri&&p.pri!==F.pri)return false;
+  if(F.from||F.to){const s=p.start||p.due,e=p.due||p.start;if(!s||(F.from&&e<F.from)||(F.to&&s>F.to))return false}
+  if(F.overdue&&!(p.due&&p.due<M.today&&!p.arch))return false;
+  if(F.q&&!(p.id+" "+p.name).toLowerCase().includes(F.q.toLowerCase()))return false;return true};
+function presetRange(p,today){const y=+today.slice(0,4),m=+today.slice(5,7),pad=n=>String(n).padStart(2,"0");
+  if(p==="today")return[today,today];
+  if(p==="week"){const dow=(new Date(dd(today)*864e5).getUTCDay()+6)%7,a=addD(today,-dow);return[a,addD(a,6)]}
+  if(p==="q"||p==="nq"){let q=Math.floor((m-1)/3)+(p==="nq"?1:0),yy=y;if(q>3){q=0;yy++}const sm=q*3+1,em=sm+2,last=new Date(Date.UTC(yy,em,0)).getUTCDate();return[yy+"-"+pad(sm)+"-01",yy+"-"+pad(em)+"-"+pad(last)]}
+  return["",""]}
+function applyPreset(){if(F.preset)[F.from,F.to]=presetRange(F.preset,M.today)}
+const ctxs=()=>M.ctxs.filter(c=>!F.ctx||c.id===F.ctx);
+function layers(keys,edges){const inc={};keys.forEach(k=>inc[k]=[]);edges.forEach(([a,b])=>inc[b].push(a));const dp={},vs={};
+  const f=k=>{if(dp[k]!==undefined)return dp[k];if(vs[k])return 0;vs[k]=1;return dp[k]=inc[k].length?1+Math.max(...inc[k].map(f)):0};keys.forEach(f);return dp}
+function crit(keys,edges,open){const ok=keys.filter(k=>open.has(k));const ed=edges.filter(([a,b])=>open.has(a)&&open.has(b));const dp=layers(ok,ed);const inc={};ok.forEach(k=>inc[k]=[]);ed.forEach(([a,b])=>inc[b].push(a));
+  const N=new Set(),E=new Set();if(!ok.length)return{n:N,e:E};let b=ok.reduce((x,y)=>dp[y]>dp[x]?y:x);N.add(b);
+  while(dp[b]>0){const p=inc[b].find(x=>dp[x]===dp[b]-1);if(!p)break;N.add(p);E.add(p+">"+b);b=p}return N.size<2?{n:new Set(),e:new Set()}:{n:N,e:E}}
+const wrap=(s,n,m)=>{const o=[""];String(s).split(" ").forEach(x=>{const i=o.length-1;if((o[i]+" "+x).trim().length>n&&o[i])o.push(x);else o[i]=(o[i]+" "+x).trim()});if(o.length>m){o.length=m;o[m-1]=o[m-1].slice(0,n-1)+"…"}return o};
+const fillOf=k=>k.cat==="done"?"var(--ok)":k.cat==="doing"?"var(--wip)":"var(--card)";
+const edgeP=(a,b,cls)=>{const x1=a.x+a.w,y1=a.y+a.h/2,x2=b.x,y2=b.y+b.h/2,c=Math.max(24,Math.abs(x2-x1)/2);return `<path class="e ${cls}" data-a="${a.k}" data-b="${b.k}" d="M${x1} ${y1}C${x1+c} ${y1} ${x2-c} ${y2} ${x2} ${y2}"/>`};
+const taskTitle=k=>`${k.id} · ${k.text}${k.owner?" · @"+k.owner:""}${k.due?" · "+k.due:""}`;
+const secHead=(c,y,w,n)=>`<rect x="0" y="${y}" width="${w}" height="28" rx="8" fill="var(--card)" stroke="var(--bd)"/><text x="12" y="${y+19}" font-size="13" font-weight="800" fill="var(--tx)">${esc(c.name)} <tspan fill="var(--mu)" font-weight="500">· ${n}</tspan></text>`;
+function drawEdges(pos,edges,cp){let s="";edges.forEach(([a,b])=>{if(!pos[a]||!pos[b])return;const dn=LK.t[a]?LK.t[a].cat==="done":(LK.p[a]&&LK.p[a].status==="completed");s+=edgeP(pos[a],pos[b],(dn?"ok ":"")+(cp&&cp.e.has(a+">"+b)?"cr":""))});return s}
+
+function viewDep(){
+  const W=190,H=64,GX=60,GY=12,P=0;let y0=0,mw=0,s="",pos={},edges=[],keys=[],open=new Set(),n=0;
+  ctxs().forEach(c=>{const ts=c.tasks.filter(visT);if(!ts.length)return;const vs=new Set(ts.map(k=>k.id)),ed=[];
+    ts.forEach(k=>k.dep.forEach(d=>vs.has(d)&&ed.push([d,k.id])));const lay=layers(ts.map(k=>k.id),ed),cols=[];
+    const po=k=>k.proj?c.projects.indexOf(k.proj):999;ts.forEach(k=>(cols[lay[k.id]]=cols[lay[k.id]]||[]).push(k));
+    cols.forEach(col=>col.sort((a,b)=>po(a)-po(b)||a.id.localeCompare(b.id)));const rows=Math.max(...cols.map(x=>x.length));
+    const w=cols.length*(W+GX)-GX;mw=Math.max(mw,w);s+=`@@H${c.id}@@`;cols.forEach((col,x)=>{s+=`<text x="${x*(W+GX)+W/2}" y="${y0+44}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--mu)">${x?t("l")+" "+x:t("l0")}</text>`;
+      col.forEach((k,r)=>{pos[k.id]={k:k.id,x:x*(W+GX),y:y0+52+r*(H+GY),w:W,h:H}})});
+    ed.forEach(e=>edges.push(e));ts.forEach(k=>{keys.push(k.id);if(k.cat!=="done")open.add(k.id)});n+=ts.length;
+    s=s.replace(`@@H${c.id}@@`,secHead(c,y0,Math.max(w,300),ts.length+" "+t("tasks")));
+    ts.forEach(k=>{const p=pos[k.id],f=fillOf(k),tc=(k.cat==="done"||k.cat==="doing")?"#fff":"var(--tx)",dash=k.cat==="blocked"?"5 3":k.waiting?"5 4":k.cat==="proposed"?"2 3":"",st=k.over?"var(--bad)":k.cat==="done"||k.cat==="doing"?f:k.color;
+      const tl=wrap(k.text,27,2),meta=[k.owner?"@"+k.owner:"",k.due?k.due.slice(5):"",k.pri||""].filter(Boolean).join(" · ");
+      s+=`<g class="n" data-k="${esc(k.id)}" data-t="t"><title>${esc(taskTitle(k))}</title><rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="12" fill="${f}" stroke="${st}" stroke-width="2.2" ${dash?`stroke-dasharray="${dash}"`:""}/><rect x="${p.x}" y="${p.y}" width="6" height="${H}" rx="3" fill="${k.color}"/>
+<text x="${p.x+14}" y="${p.y+15}" font-size="10.5" font-weight="800" fill="${k.cat==="done"||k.cat==="doing"?"#fff":k.color}">${esc(k.id)}${k.proj?" · "+esc(k.proj.name.slice(0,16)):""}${k.cat==="done"?" ✓":k.cat==="doing"?" ◐":k.cat==="blocked"?" ⛔":k.cat==="proposed"?" ?":""}</text>${tl.map((l,i)=>`<text x="${p.x+14}" y="${p.y+29+i*12}" font-size="11" fill="${tc}">${esc(l)}</text>`).join("")}<text x="${p.x+14}" y="${p.y+H-6}" font-size="10" fill="${k.over?"var(--bad)":tc}" ${k.over?'font-weight="700"':""}>${esc(meta)}</text></g>`});
+    y0+=52+rows*(H+GY)+18});
+  if(!n)return null;const cp=F.crit?crit(keys,edges,open):null;s=drawEdges(pos,edges,cp)+s;
+  return{s,w:mw+P+4,h:y0,edges,keys,cp}}
+
+function viewProj(){
+  const W=230,H=92,GX=64,GY=14;let y0=0,mw=0,s="",pos={},edges=[],keys=[],open=new Set(),n=0;
+  ctxs().forEach(c=>{const ps=c.projects.filter(visP);if(!ps.length)return;const vs=new Set(ps.map(p=>p.key)),ed=[];
+    c.edges.forEach(([a,b])=>{const ka=c.id+":"+a,kb=c.id+":"+b;vs.has(ka)&&vs.has(kb)&&ed.push([ka,kb])});const lay=layers(ps.map(p=>p.key),ed),cols=[];
+    ps.forEach(p=>(cols[lay[p.key]]=cols[lay[p.key]]||[]).push(p));const rows=Math.max(...cols.map(x=>x.length));const w=cols.length*(W+GX)-GX;mw=Math.max(mw,w);
+    s+=secHead(c,y0,Math.max(w,300),ps.length+" "+t("proj").toLowerCase());
+    cols.forEach((col,x)=>{s+=`<text x="${x*(W+GX)+W/2}" y="${y0+44}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--mu)">${x?t("l")+" "+x:t("l0")}</text>`;col.forEach((p,r)=>{pos[p.key]={k:p.key,x:x*(W+GX),y:y0+52+r*(H+GY),w:W,h:H}})});
+    ed.forEach(e=>edges.push(e));ps.forEach(p=>{keys.push(p.key);if(p.status!=="completed")open.add(p.key)});n+=ps.length;
+    ps.forEach(p=>{const q=pos[p.key],pr=p.tot?p.dn/p.tot:0,dim=p.arch?.55:1,dash=p.status==="future"||p.waiting?"5 4":p.status==="paused"?"2 3":"",over=p.due&&p.due<M.today&&!p.arch;
+      const nl=wrap(p.name,28,2),dt=[p.start?p.start.slice(5):"",p.due?"→ "+p.due.slice(5):""].filter(Boolean).join(" ");
+      s+=`<g class="n" data-k="${esc(p.key)}" data-t="p" opacity="${dim}"><title>${esc(p.id+" · "+p.name+" · "+p.status)}</title><rect x="${q.x}" y="${q.y}" width="${W}" height="${H}" rx="12" fill="var(--card)" stroke="${over?"var(--bad)":p.color}" stroke-width="2.2" ${dash?`stroke-dasharray="${dash}"`:""}/><rect x="${q.x}" y="${q.y}" width="6" height="${H}" rx="3" fill="${p.color}"/>
+<text x="${q.x+14}" y="${q.y+16}" font-size="10.5" font-weight="800" fill="${p.color}">${esc(p.id)} · ${esc(p.status)}${p.pri?" · "+esc(p.pri):""}</text>${nl.map((l,i)=>`<text x="${q.x+14}" y="${q.y+32+i*13}" font-size="12" font-weight="700" fill="var(--tx)">${esc(l)}</text>`).join("")}
+<text x="${q.x+14}" y="${q.y+62}" font-size="10" fill="${over?"var(--bad)":"var(--mu)"}">${esc(dt)}${dt?" · ":""}${p.dn}/${p.tot} ${t("tasks")}${p.risk_max?" · ⚠ "+t("sev")+" "+p.risk_max:""}</text>
+<rect x="${q.x+14}" y="${q.y+H-16}" width="${W-28}" height="6" rx="3" fill="var(--bd)"/><rect x="${q.x+14}" y="${q.y+H-16}" width="${(W-28)*pr}" height="6" rx="3" fill="var(--ok)"/></g>`});
+    y0+=52+rows*(H+GY)+18});
+  if(!n)return null;const cp=F.crit?crit(keys,edges,open):null;s=drawEdges(pos,edges,cp)+s;return{s,w:mw+4,h:y0,edges,keys,cp}}
+
+function viewTime(){
+  const X0=170,PX=16,sv=ctxs().map(c=>({c,ts:c.tasks.filter(visT),ps:c.projects.filter(visP),ag:c.agenda.filter(a=>(!F.from||a.date>=F.from)&&(!F.to||a.date<=F.to)&&!F.proj&&!F.owner&&!F.q&&!F.overdue)}));
+  const ds=[M.today];sv.forEach(o=>{o.ts.forEach(k=>k.due&&ds.push(k.due));o.ps.forEach(p=>{p.start&&ds.push(p.start);p.due&&ds.push(p.due)});o.ag.forEach(a=>ds.push(a.date))});
+  let mn=addD(ds.reduce((a,b)=>a<b?a:b),-3),mx=addD(ds.reduce((a,b)=>a>b?a:b),3);if(dbt(mn,mx)<28)mx=addD(mn,28);const nd=dbt(mn,mx),AW=nd*PX,UX=X0+AW+30,UW=340,xo=d=>X0+dbt(mn,d)*PX;
+  let y0=0,s="",pos={},edges=[],keys=[],open=new Set(),n=0;const TWd=UX+UW;
+  sv.forEach(o=>{if(!o.ts.length&&!o.ps.length&&!o.ag.length)return;const c=o.c;s+=secHead(c,y0,TWd,o.ts.length+" "+t("tasks"));
+    let ax="";for(let i=0;i<=nd;i+=7){const d=addD(mn,i);ax+=`<text x="${xo(d)}" y="${y0+44}" font-size="10" text-anchor="middle" fill="var(--mu)">${d.slice(5)}</text><line x1="${xo(d)}" x2="${xo(d)}" y1="${y0+48}" y2="@@Y@@" stroke="var(--bd)" stroke-dasharray="2 4"/>`}
+    s+=`<text x="${UX}" y="${y0+44}" font-size="10" font-weight="700" fill="var(--mu)">${t("undated")}</text>`;let y=y0+52,gridEnd=y;let body="";
+    const rows=o.ps.map(p=>({p,ts:o.ts.filter(k=>k.proj===p)}));const tr=o.ts.filter(k=>!k.proj);if(tr.length)rows.push({p:null,ts:tr});
+    rows.forEach(r=>{const dated=r.ts.filter(k=>k.due).sort((a,b)=>a.due.localeCompare(b.due)||a.id.localeCompare(b.id)),und=r.ts.filter(k=>!k.due),lv=[];
+      dated.forEach(k=>{const x=xo(k.due);let l=0;while(lv[l]!==undefined&&lv[l]>x-2)l++;lv[l]=x+16+k.id.length*6;k._l=l});
+      const rh=Math.max(34,10+(Math.max(...dated.map(k=>k._l),0)+1)*20,10+Math.ceil(und.length/5)*24);const col=r.p?r.p.color:"#6b6a80";
+      body+=`<line x1="0" x2="${TWd}" y1="${y+rh}" y2="${y+rh}" stroke="var(--bd)" opacity=".5"/>`;
+      body+=r.p?`<g class="n" data-k="${esc(r.p.key)}" data-t="p"><title>${esc(r.p.id+" · "+r.p.name)}</title><circle cx="10" cy="${y+16}" r="5" fill="${col}"/><text x="22" y="${y+20}" font-size="12" font-weight="700" fill="var(--tx)">${esc(wrap(r.p.name,20,1)[0])}</text></g>`:`<circle cx="10" cy="${y+16}" r="5" fill="${col}"/><text x="22" y="${y+20}" font-size="12" font-weight="700" fill="var(--mu)">${esc(t("tracker"))}</text>`;
+      if(r.p){if(r.p.start&&r.p.due)body+=`<rect class="tl" x="${xo(r.p.start)}" y="${y+rh-8}" width="${Math.max(4,xo(r.p.due)-xo(r.p.start))}" height="5" rx="2.5" fill="${col}" opacity=".45"><title>${esc(r.p.start+" → "+r.p.due)}</title></rect>`;
+        else if(r.p.due||r.p.start){const x=xo(r.p.due||r.p.start);body+=`<polygon class="tl" points="${x},${y+rh-12} ${x+5},${y+rh-6} ${x},${y+rh} ${x-5},${y+rh-6}" fill="${col}"/>`}}
+      dated.forEach(k=>{const x=xo(k.due),yy=y+6+k._l*20,f=fillOf(k),st=k.over?"var(--bad)":k.cat==="done"||k.cat==="doing"?f:k.color;pos[k.id]={k:k.id,x:x-7,y:yy,w:14,h:14};
+        body+=`<g class="n" data-k="${esc(k.id)}" data-t="t"><title>${esc(taskTitle(k))}</title><rect x="${x-7}" y="${yy}" width="14" height="14" rx="4" fill="${f}" stroke="${st}" stroke-width="2" ${k.cat==="proposed"||k.waiting?'stroke-dasharray="3 2"':""}/><text x="${x+11}" y="${yy+11}" font-size="10" fill="${k.over?"var(--bad)":"var(--tx)"}">${esc(k.id)}</text></g>`});
+      und.forEach((k,i)=>{const x=UX+(i%5)*66,yy=y+6+Math.floor(i/5)*24,st=k.cat==="done"||k.cat==="doing"?fillOf(k):k.color;pos[k.id]={k:k.id,x,y:yy,w:60,h:20};
+        body+=`<g class="n" data-k="${esc(k.id)}" data-t="t"><title>${esc(taskTitle(k))}</title><rect x="${x}" y="${yy}" width="60" height="20" rx="6" fill="${fillOf(k)}" stroke="${st}" stroke-width="2" stroke-dasharray="4 3"/><text x="${x+30}" y="${yy+14}" font-size="10" text-anchor="middle" fill="${k.cat==="done"||k.cat==="doing"?"#fff":"var(--tx)"}">${esc(k.id)}</text></g>`});
+      y+=rh});
+    if(o.ag.length){body+=`<text x="22" y="${y+20}" font-size="12" font-weight="700" fill="var(--mu)">${esc(t("agenda"))}</text>`;o.ag.forEach(a=>{const x=xo(a.date);body+=`<g class="tl"><title>${esc(a.date+" · "+a.text)}</title><polygon points="${x-6},${y+22} ${x+6},${y+22} ${x},${y+10}" fill="#0891b2"/><text x="${x+9}" y="${y+21}" font-size="10" fill="var(--tx)">${esc(a.text.slice(0,28))}</text></g>`});y+=34}
+    gridEnd=y;s+=ax.replace(/@@Y@@/g,gridEnd)+body;
+    const vs=new Set(o.ts.map(k=>k.id));o.ts.forEach(k=>{keys.push(k.id);if(k.cat!=="done")open.add(k.id);k.dep.forEach(d=>vs.has(d)&&edges.push([d,k.id]))});n+=o.ts.length+o.ps.length;y0=y+18});
+  if(!n)return null;const cp=F.crit?crit(keys,edges,open):null;s=drawEdges(pos,edges.filter(([a,b])=>pos[a]&&pos[b]),cp)+s+`<line x1="${xo(M.today)}" x2="${xo(M.today)}" y1="0" y2="${y0}" stroke="var(--bad)" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${xo(M.today)+4}" y="10" font-size="10" font-weight="700" fill="var(--bad)">${t("today")}</text>`;
+  return{s,w:TWd,h:y0,edges,keys,cp}}
+
+function setBase(){const sv=$("sv");if(!sv)return;sv.classList.remove("dim");sv.querySelectorAll(".hl").forEach(q=>q.classList.remove("hl"));
+  if(BASE&&BASE.n.size){sv.classList.add("dim");sv.querySelectorAll(".n").forEach(q=>q.classList.toggle("hl",BASE.n.has(q.dataset.k)));sv.querySelectorAll(".e").forEach(q=>q.classList.toggle("hl",BASE.e.has(q.dataset.a+">"+q.dataset.b)))}}
+function hover(key){const sv=$("sv"),rel=new Set([key]);const up=x=>EDGES.forEach(([a,b])=>{if(b===x&&!rel.has(a)){rel.add(a);up(a)}}),dn=x=>EDGES.forEach(([a,b])=>{if(a===x&&!rel.has(b)){rel.add(b);dn(b)}});up(key);dn(key);
+  sv.classList.add("dim");sv.querySelectorAll(".n").forEach(q=>q.classList.toggle("hl",rel.has(q.dataset.k)));sv.querySelectorAll(".e").forEach(q=>q.classList.toggle("hl",rel.has(q.dataset.a)&&rel.has(q.dataset.b)))}
+function zoom(f){const sv=$("sv");if(!sv)return;z=f?Math.max(.3,Math.min(2,z*f)):Math.min(1,($("box").clientWidth-32)/TW);sv.setAttribute("width",TW*z);sv.setAttribute("height",TH*z)}
+
+function render(){
+  if(!M)return;const r=tab==="dep"?viewDep():tab==="proj"?viewProj():viewTime();const box=$("box");
+  const vt=M.ctxs.flatMap(c=>c.tasks).filter(visT),dn=vt.filter(k=>k.cat==="done").length,pc=vt.length?Math.round(vt.reduce((s,k)=>s+(k.cat==="done"?1:k.cat==="doing"?.5:0),0)/vt.length*100):0;
+  $("pg").textContent=t("progress")+" "+pc+"% · "+dn+"/"+vt.length;
+  const legend=[["var(--ok)",t("done"),1],["var(--wip)",t("doing"),1],["var(--bd)",t("pending"),0],["var(--bad)",t("blocked")+" / "+t("overdue"),0]].map(([c,l,f])=>`<span><i style="border-color:${c};background:${f?c:"transparent"}"></i>${l}</span>`).join("")+
+    `<span><i style="border-color:var(--mu);border-style:dashed"></i>${t("waiting")}</span><span><i style="border-color:var(--mu);border-style:dotted"></i>${t("proposed")}</span>`+
+    ctxs().flatMap(c=>c.projects).filter(p=>!p.arch||F.arch).map(p=>`<span><i style="border-color:${p.color};background:${p.color}"></i>${esc(p.name)}</span>`).join("")+`<span>${t("hint")}</span>`;$("lg").innerHTML=legend;
+  if(!r){box.innerHTML=`<div id="msg">${t("nodata")}</div>`;EDGES=[];return}
+  TW=r.w;TH=r.h;EDGES=r.edges;BASE=r.cp;box.innerHTML=`<svg id="sv" viewBox="0 0 ${TW} ${TH}" width="${TW}" height="${TH}">${r.s}</svg>`;zoom(0);setBase();
+  const sv=$("sv");sv.addEventListener("mouseover",e=>{const n=e.target.closest(".n");if(n&&n.dataset.t==="t"||n&&tab==="proj")hover(n.dataset.k)});
+  sv.addEventListener("mouseout",e=>{const n=e.relatedTarget&&e.relatedTarget.closest?e.relatedTarget.closest(".n"):null;if(!n)setBase()});
+  sv.addEventListener("click",e=>{const n=e.target.closest(".n");if(n)detail(n.dataset.t,n.dataset.k)});saveHash()}
+
+function detail(ty,k){const s=$("side");const row=(a,b)=>b==null||b===""||(Array.isArray(b)&&!b.length)?"":`<dt>${t(a)}</dt><dd>${esc(Array.isArray(b)?b.join(", "):b)}</dd>`;let h="";
+  if(ty==="t"){const x=LK.t[k];if(!x)return;h=`<h3>${esc(x.id)}</h3>`+row("text",x.text)+row("ctx",M.ctxs.find(c=>c.id===x.ctx).name)+row("project",x.proj?x.proj.name:t("tracker"))+row("status",t(x.cat)+(x.waiting?" · "+t("waiting"):""))+row("owner",x.owner)+row("due",x.due)+row("pri",x.pri&&t(x.pri))+row("kind",x.kind)+row("topic",x.topic)+row("src",x.src)+row("deps",x.dep)+row("blocks",x.bl)+row("file",x.file+":"+x.line)}
+  else{const x=LK.p[k];if(!x)return;h=`<h3>${esc(x.name)}</h3>`+row("id",x.id)+row("status",x.status)+row("pri",x.pri&&t(x.pri))+row("start",x.start)+row("due",x.due)+row("deps",x.dep)+row("blocks",x.blocks)+row("stake",x.stake)+row("rev",x.reviewed)+row("tasks",x.dn+"/"+x.tot)+(x.risks.length?`<dt>${t("risks")}</dt><dd>${x.risks.map(r=>esc(r.id+" · "+r.risk+" · "+t("sev")+" "+r.sev)).join("<br>")}</dd>`:"")+row("file",x.file)}
+  s.innerHTML=`<button id="cl">${t("close")}</button>`+h;s.hidden=false;$("cl").onclick=()=>{s.hidden=true}}
+
+function sel(id,opts,val){return `<select id="${id}"><option value="">${t("all")}</option>${opts.map(([v,l])=>`<option value="${esc(v)}"${v===val?" selected":""}>${esc(l)}</option>`).join("")}</select>`}
+function buildFlt(){const tk=M.ctxs.flatMap(c=>c.tasks),own=[...new Set(tk.map(k=>k.owner).filter(Boolean))].sort(),pr=["high","med","low"],cx=M.ctxs.map(c=>[c.id,c.name]);
+  const pj=M.ctxs.filter(c=>!F.ctx||c.id===F.ctx).flatMap(c=>c.projects.map(p=>[p.key,p.name]));
+  $("flt").innerHTML=`<label>${t("ctx")} ${sel("fc",cx,F.ctx)}</label><label>${t("project")} ${sel("fp",pj,F.proj)}</label>`+ST.map(s=>`<label class="chip"><input type="checkbox" data-st="${s}"${F.st.includes(s)?" checked":""}>${t(s)}</label>`).join("")+
+  `<label>${t("owner")} ${sel("fo",own.map(o=>[o,o]),F.owner)}</label><label>${t("pri")} ${sel("fr",pr.map(p=>[p,t(p)]),F.pri)}</label><label>${t("dates")} <select id="fd"><option value="">${t("all")}</option>${["today","week","q","nq"].map(p=>{const[a,b]=presetRange(p,M.today);return `<option value="${p}"${F.preset===p?" selected":""}>${t("p_"+p)} (${a===b?a.slice(5):a.slice(5)+" → "+b.slice(5)})</option>`}).join("")}</select></label><label>${t("from")} <input type="date" id="ff" value="${F.from}"></label><label>${t("to")} <input type="date" id="ft" value="${F.to}"></label>`+
+  `<label><input type="checkbox" id="fv"${F.overdue?" checked":""}>${t("overdue")}</label><label><input type="checkbox" id="fk"${F.crit?" checked":""}>${t("crit")}</label><label><input type="checkbox" id="fa"${F.arch?" checked":""}>${t("arch")}</label><input type="text" id="fq" placeholder="${t("search")}" value="${esc(F.q)}"><button id="fz">${t("reset")}</button>`;
+  const on=(i,fn)=>$(i).addEventListener("change",fn);
+  on("fc",e=>{F.ctx=e.target.value;F.proj="";buildFlt();render()});on("fp",e=>{F.proj=e.target.value;render()});on("fo",e=>{F.owner=e.target.value;render()});on("fr",e=>{F.pri=e.target.value;render()});
+  on("fd",e=>{F.preset=e.target.value;if(F.preset)applyPreset();else{F.from="";F.to=""}buildFlt();render()});on("ff",e=>{F.from=e.target.value;F.preset="";$("fd").value="";render()});on("ft",e=>{F.to=e.target.value;F.preset="";$("fd").value="";render()});on("fv",e=>{F.overdue=e.target.checked;render()});on("fk",e=>{F.crit=e.target.checked;render()});on("fa",e=>{F.arch=e.target.checked;render()});
+  $("fq").addEventListener("input",e=>{F.q=e.target.value;render()});$("fz").onclick=()=>{F=defF();buildFlt();render()};
+  $("flt").querySelectorAll("[data-st]").forEach(c=>c.addEventListener("change",()=>{F.st=[...$("flt").querySelectorAll("[data-st]")].filter(x=>x.checked).map(x=>x.dataset.st);render()}))}
+function buildTabs(){$("tabs").innerHTML=["dep","time","proj"].map(k=>`<button data-tab="${k}" class="${tab===k?"on":""}">${t(k)}</button>`).join("");$("tabs").querySelectorAll("button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;buildTabs();render()})}
+function chrome(){document.documentElement.lang=lang;$("ttl").textContent=t("ttl");$("bf").textContent=t("fit");$("lng").textContent=lang==="es"?"EN":"ES";buildTabs();if(M)buildFlt()}
+async function load(first){try{const r=await fetch("/model.json",{cache:"no-store"});if(!r.ok)throw new Error(r.status);M=await r.json();derive();applyPreset();
+  $("upd").textContent=t("updated")+" "+new Date().toTimeString().slice(0,5);if(first){chrome();if(timer)clearInterval(timer);timer=setInterval(()=>load(false),Math.max(1,M.refresh_min||30)*60000)}else{const o=$("fq")&&document.activeElement===$("fq");buildFlt();if(o)$("fq").focus()}render()}
+  catch(e){$("box").innerHTML=`<div id="msg">${t("err")}: ${esc(e.message)}</div>`}}
+$("bm").onclick=()=>zoom(.85);$("bp").onclick=()=>zoom(1.18);$("bf").onclick=()=>zoom(0);$("rf").onclick=()=>load(false);$("lng").onclick=()=>{lang=lang==="es"?"en":"es";chrome();render()};
+const boot=()=>{chrome();load(true)};if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();
+</script></body></html>
