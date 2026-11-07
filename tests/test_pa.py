@@ -256,6 +256,15 @@ class TestEngine(Base):
     def test_undo_refuses_escape(self):
         self.assertEqual(run(self.v, "apply", "undo", "--ctx", "acme-corp", "--file", "../x.md", "--line", "1", "--before", "a", "--after", "b", "--yes")[0], 7)
 
+    def test_merge_repoints_agenda_and_unions_src(self):
+        tr = self.v / "acme-corp/tracker.md"
+        tr.write_text(tr.read_text() + "2026-11-09 | Review starts | ref:T-0002\n")
+        code, out = run(self.v, "apply", "merge", "--ctx", "acme-corp", "--task", "T-0003", "--drop", "T-0002", "--yes", "--json")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["record"]["agenda"], 1)
+        self.assertIn("Review starts | ref:T-0003", tr.read_text())
+        self.assertRegex((self.v / self.F).read_text(), r"Cutover rehearsal.*src:min-2026-10-15")
+
     def test_merge_repoints_dependents_and_keeps_graph_valid(self):
         code, out = run(self.v, "apply", "merge", "--ctx", "acme-corp", "--task", "T-0004", "--drop", "T-0002", "--yes", "--json")
         self.assertEqual(code, 0, out)

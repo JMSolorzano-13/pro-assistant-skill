@@ -3,7 +3,9 @@ EN: AI organizer/tracker on a local Markdown vault. Contexts (companies, persona
 ES: Organizador/seguimiento con IA sobre un vault Markdown local. Contextos (empresas, personal), proyectos, seguimientos ligeros, riesgos, minutas, agenda. Espejo opcional en Todoist. Solo organiza; no ejecuta. Los archivos del vault están escritos para agentes de IA (inglés, comprimido).
 
 ## Install / Instalar
-Copy this folder into your agent skills dir (or install from skills.sh). / Copia esta carpeta al directorio de skills de tu agente (o instala desde skills.sh).
+`npx skills add JMSolorzano-13/pro-assistant-skill -g -y`, or copy this folder into your agent skills dir. / o copia esta carpeta al directorio de skills de tu agente.
+Claude Code: also link the user-facing subagent / enlaza también el subagente:
+`ln -s <skill_dir>/agents/executive-assistant.md ~/.claude/agents/pro-assistant-executive.md`
 
 ## Use / Uso
 - `init` — create vault + contexts. / crea vault + contextos.

@@ -1064,7 +1064,14 @@ def apply_merge(v, a, keep, es):
             segs.pop(seg_index(segs, "dep"))
         return " | ".join(segs)
     merged = [x for x in dict.fromkeys(deps_of(keep["t"]) + deps_of(gone["t"])) if x not in (kid, did)]
-    line_edit(keep["file"], keep["line"], lambda l: with_deps(l, merged))
+    srcs = list(dict.fromkeys(x for t in (keep["t"], gone["t"]) for x in t.get("src", "").split(",") if x))
+
+    def keep_line(l):
+        segs = with_deps(l, merged).split(" | ")
+        if srcs:
+            set_seg(segs, "src", ",".join(srcs), ("note", "pri", "due", "@", "id"))
+        return " | ".join(segs)
+    line_edit(keep["file"], keep["line"], keep_line)
 
     def drop_line(l):
         segs = with_deps(l, []).split(" | ")
@@ -1079,7 +1086,15 @@ def apply_merge(v, a, keep, es):
             deps = [kid if d == did else d for d in deps_of(x["t"])]
             line_edit(x["file"], x["line"], lambda l, ds=list(dict.fromkeys(deps)): with_deps(l, ds))
             moved += 1
-    record = {"taskId": kid, "dropped": did, "dependents": moved, "kind": "merge"}
+    tracker = v.root / a.ctx / "tracker.md"
+    if tracker.exists():
+        raw = new.get(tracker, read_raw(tracker))
+        repointed, agenda = re.subn(r"(\| ref:)%s\b" % re.escape(did), lambda m: m.group(1) + kid, raw)
+        if agenda:
+            new[tracker] = repointed
+    else:
+        agenda = 0
+    record = {"taskId": kid, "dropped": did, "dependents": moved, "agenda": agenda, "kind": "merge"}
     if not a.yes:
         return apply_result(a, preview=msg, record=record)
     errs = commit(v, new)
