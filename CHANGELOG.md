@@ -1,6 +1,22 @@
 # changelog
 Format: Keep a Changelog. semver. Rules: references/versioning.md.
 
+## [Unreleased]
+### Added
+- `checklist` cmd: static action page per ctx (mine overdue/next 14 days/no date + others overdue; follow-ups and doing only when due), project label + group/filter by project, answer box per item, copy changes back; user-lang text cached in `.pro-assistant/cache/` via `--missing`/`--human`
+- `<ctx>/_glossary.md`: labels expanded by pa.py and rejected by lint, terms sent to subagent; `validate` warns on opaque labels in open tasks
+- view opens with Status pending+doing and dates = week
+- `on` intent with `--date`; lint requires every other person named on today/on answers
+- `sprints` intent: sprint plans parsed from index.md, owner and state from cited tasks; `model` exposes them
+- lint: `avoid:` terms and missing sprint end dates; response templates carry an abbreviation glossary
+### Fixed
+- human payload listed finished tasks as blockers; waits_on now holds open tasks only
+### Changed
+- subagent model: Sonnet; Spanish reads better and stays on the asked date, cost accepted
+- every answer goes through the subagent; `ask --raw` = plain Python text for debug
+- response templates rewritten as an assistant voice; never hide tasks
+- humanizer: orchestrator never edits subagent text; lint runs on the final text
+
 ## [0.5.0] - 2026-11-06
 ### Added
 - `ask`: single read entry; Python answers list intents without a model, subagent only for judgement

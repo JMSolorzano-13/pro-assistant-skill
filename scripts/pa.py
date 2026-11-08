@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """pro-assistant vault tool. stdlib only.
-cmds: version | init | sync | validate | next-id | check | new-project | upgrade | model | view | open | ask | brief | apply | compose | prefs | lint-output | graph | dupes
+cmds: version | init | sync | validate | next-id | check | new-project | upgrade | model | view | open | checklist | ask | brief | apply | compose | prefs | lint-output | graph | dupes
 exit: 0 ok | 1 validation errors | 2 refused (dup) | 3 ambiguous task | 4 task not found | 6 file changed | 7 outside vault | 8 task not open | 10 matches found"""
-import argparse, contextlib, datetime, difflib, io, json, os, re, socket, subprocess, sys, tempfile, time, webbrowser
+import argparse, contextlib, datetime, difflib, hashlib, io, json, os, re, socket, subprocess, sys, tempfile, time, webbrowser
 import http.server, urllib.request
 from pathlib import Path
 
@@ -293,6 +293,11 @@ def cmd_validate(v, a):
         for x in v.tasks(ctx):
             if x["t"].get("stage") and not x["t"].get("pkg"):
                 W.append("stage without pkg %s" % x["t"].get("id"))
+        for x in v.tasks(ctx):
+            if not x["t"]["done"] and x["t"].get("st") not in ("done", "cancelled"):
+                for code in OPAQUE.findall(x["t"]["text"]):
+                    if not OPAQUE_OK.match(code):
+                        W.append("opaque code %s @%s:%d: name the thing (schemas.md)" % (code, rel(v, x["file"]), x["line"]))
         tmap = {x["t"]["id"]: x["t"] for x in v.tasks(ctx) if x["t"].get("id")}
         graph = {tid: [d for d in t.get("dep", "").split(",") if d] for tid, t in tmap.items()}
         for tid, deps in graph.items():
@@ -486,6 +491,28 @@ def parse_risks(path):
     return rows
 
 
+def parse_sprints(path):
+    """sprint plans as written in index.md: '- **<stream> sprint plan:**' then '  - **S23** (start..end): text'. dates stay null if absent."""
+    rows, stream = [], None
+    if not path.exists():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        head = re.match(r"^- \*\*(.+?) (?:sprint|publish) plan\b.*", line)
+        if head:
+            stream = head.group(1)
+            continue
+        m = re.match(r"^\s+- \*\*(S\d+)\*\*(?: \((\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})\))?: (.+)$", line)
+        if not m:
+            if not line.startswith((" ", "\t")):
+                stream = None
+            continue
+        if stream:
+            text = m.group(4).replace("*", "")
+            rows.append({"stream": stream, "sprint": m.group(1), "start": m.group(2), "end": m.group(3), "text": text,
+                         "refs": re.findall(r"\bT-\d+", text)})
+    return rows
+
+
 def org_name(path, default):
     if path.exists():
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -523,7 +550,7 @@ def build_model(v):
             projects.append({"id": pid, "slug": d.name, "name": f.get("name", d.name), "status": f.get("status"),
                              "pri": f.get("pri"), "start": f.get("start") or None, "due": f.get("due") or None,
                              "dep": lst("dep"), "blocks": lst("blocks"), "stake": lst("stake"),
-                             "reviewed": f.get("reviewed") or None, "risk_max": max([r["sev"] for r in openr] or [0]),
+                             "reviewed": f.get("reviewed") or None, "sprints": parse_sprints(d / "index.md"), "risk_max": max([r["sev"] for r in openr] or [0]),
                              "risks": openr[:5], "file": rel(v, d / "index.md")})
         tasks = []
         for x in v.tasks(ctx):
@@ -662,7 +689,7 @@ def cmd_upgrade(v, a):
     return 0
 
 
-INTENTS = ("today", "week", "upcoming", "pending", "risks", "project", "unblock")
+INTENTS = ("today", "week", "upcoming", "pending", "risks", "project", "unblock", "sprints", "on")
 ST_HUMAN = {"proposed": "unconfirmed", "confirmed": "pending", "doing": "in progress", "blocked": "blocked"}
 MONTHS = {"es": "enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre".split(),
           "en": "January February March April May June July August September October November December".split()}
@@ -698,6 +725,12 @@ def clean(s):
     return re.sub(r"\s{2,}", " ", s).strip(" -,;:")
 
 
+def sprint_text(text):
+    """delivery text without task-id lists and their connectors"""
+    s = re.sub(r"\s*\+?\s*\bT-\d+(?:\s*[/+,]\s*T-\d+)*(?:\s+[a-z]+)?\.?", "", text)
+    return clean(s).rstrip(" .+")
+
+
 def day(iso):
     """weekday computed here so the model never has to"""
     return "%s %s" % (iso, datetime.date.fromisoformat(iso).strftime("%a")) if iso else ""
@@ -729,7 +762,10 @@ def task_graph(c):
     return live, {i: reach(i) for i in live}
 
 
-def brief_data(v, intent, ctx, project=None, as_of=None, expand=False):
+def brief_data(v, intent, ctx, project=None, as_of=None, expand=False, on=None):
+    if intent == "on" and not iso_ok(on or ""):
+        raise ValueError("on needs --date YYYY-MM-DD")
+    expand = expand or intent == "on"
     today = datetime.date.fromisoformat(as_of) if as_of else datetime.date.today()
     c = next((x for x in build_model(v)["ctxs"] if x["id"] == ctx), None)
     if c is None:
@@ -748,7 +784,7 @@ def brief_data(v, intent, ctx, project=None, as_of=None, expand=False):
         want = {"today": {"overdue", "today"}, "week": {"overdue", "today", "week"},
                 "upcoming": {"today", "week", "later"}}.get(intent)
         order = {"overdue": 0, "today": 1, "week": 2, "later": 3, "nodate": 4}
-        scope = [] if intent == "risks" else [t for t in live.values() if not focus or t["project"] == focus["id"]]
+        scope = [] if intent in ("risks", "sprints") else [t for t in live.values() if not focus or t["project"] == focus["id"]]
         groups = {}
         for t in scope:
             groups.setdefault(t.get("pkg") or t["id"], []).append(t)
@@ -758,10 +794,14 @@ def brief_data(v, intent, ctx, project=None, as_of=None, expand=False):
             # pkg shows only its active stage unless expanded
             for t in (members if expand or len(members) == 1 else members[:1]):
                 b = bucket(t["due"], today)
+                if intent == "on" and t["due"] != on:
+                    continue
                 if not want or b in want:
                     rows.append((b, t, 0 if expand else len(members) - 1, len(down[t["id"]])))
         rows.sort(key=lambda r: (order[r[0]], r[1]["due"] or "9999"))
     agenda = []
+    if intent == "on":
+        agenda = [a for a in c["agenda"] if a["date"] == on]
     if intent in ("today", "week", "upcoming"):
         lim = {"today": 0, "week": 7}.get(intent)
         agenda = sorted((a for a in c["agenda"] if a["date"] >= today.isoformat()
@@ -771,16 +811,30 @@ def brief_data(v, intent, ctx, project=None, as_of=None, expand=False):
     if intent in ("risks", "project"):
         risks = sorted(((p, r) for p in c["projects"] if p["status"] not in P_ARCH and (not focus or p is focus)
                         for r in p["risks"]), key=lambda x: -x[1]["sev"])
-    return dict(today=today, c=c, focus=focus, rows=rows, agenda=agenda, risks=risks, down=down,
+    sprints = []
+    if intent == "sprints":
+        by_id = {t["id"]: t for t in c["tasks"]}
+        for p in c["projects"]:
+            if p["status"] in P_ARCH or (focus and p is not focus):
+                continue
+            for s in p["sprints"]:
+                refs = [by_id[r] for r in s["refs"] if r in by_id and by_id[r]["st"] != "cancelled"]
+                still = [t for t in refs if open_task(t)]
+                last = max(still, key=lambda t: t["due"] or "", default=None)
+                state = "done" if refs and not still else "blocked" if any(t["st"] == "blocked" for t in still) else "pending" if still else ""
+                sprints.append(dict(s, project=p["name"], owner=last["owner"] if last else None, state=state, open=[t["id"] for t in still]))
+    return dict(today=today, c=c, focus=focus, rows=rows, agenda=agenda, risks=risks, down=down, sprints=sprints, live=live,
                 pname={p["id"]: p["name"] for p in c["projects"]},
                 text_of={t["id"]: t["text"] for t in c["tasks"]})
 
 
-def build_brief(v, intent, ctx, project=None, audience="agent", as_of=None, expand=False):
+def build_brief(v, intent, ctx, project=None, audience="agent", as_of=None, expand=False, on=None):
     """compact projection. agent keeps ids. human has no id, code, path: safe input for the humanizer."""
-    d = brief_data(v, intent, ctx, project, as_of, expand)
+    d = brief_data(v, intent, ctx, project, as_of, expand, on)
     c, human, pname, text_of = d["c"], audience == "human", d["pname"], d["text_of"]
     out = ["# %s %s %s" % (intent, c["name"] if human else ctx, d["today"].isoformat())]
+    if on:
+        out.append(tsv(["asked_date", day(on)]))
     if d["focus"]:
         out.append(tsv(["project", d["focus"]["name"], d["focus"]["status"], d["focus"]["due"]]))
     if d["rows"]:
@@ -788,12 +842,18 @@ def build_brief(v, intent, ctx, project=None, audience="agent", as_of=None, expa
                        else ["b", "id", "text", "owner", "due", "pri", "st", "prj", "dep", "stages_left", "unblocks"]))
     for b, t, more, unblocks in d["rows"]:
         if human:
-            deps = "; ".join(clean(text_of.get(x, "")) for x in t["dep"] if x in text_of)
+            deps = "; ".join(clean(text_of[x]) for x in t["dep"] if x in d["live"])
             out.append(tsv([b, clean(t["text"]), t["owner"], day(t["due"]), ST_HUMAN.get(t["st"], ""),
                             pname.get(t["project"], ""), deps, more or "", unblocks or ""]))
         else:
             out.append(tsv([b, t["id"], t["text"], t["owner"], t["due"], t["pri"], t["st"], t["project"],
                             ",".join(t["dep"]), more or "", unblocks or ""]))
+    if d["sprints"]:
+        out.append("# sprints")
+        out.append(tsv(["stream", "sprint", "start", "end", "delivery", "owner", "state"] + ([] if human else ["open"])))
+        for s in d["sprints"]:
+            row = [s["stream"], s["sprint"], s["start"], s["end"], sprint_text(s["text"]), s["owner"], s["state"]]
+            out.append(tsv(row if human else row + [",".join(s["open"])]))
     if d["agenda"]:
         out.append("# agenda")
         out += [tsv([day(a["date"]), clean(a["text"])] if human else [a["date"], a["text"], a["ref"]]) for a in d["agenda"]]
@@ -807,7 +867,7 @@ def build_brief(v, intent, ctx, project=None, audience="agent", as_of=None, expa
 
 def cmd_brief(v, a):
     try:
-        print(build_brief(v, a.intent, a.ctx, a.project, a.audience, a.as_of, a.expand))
+        print(build_brief(v, a.intent, a.ctx, a.project, a.audience, a.as_of, a.expand, a.date))
     except ValueError as e:
         print("ERR", e)
         return 1
@@ -1114,6 +1174,34 @@ LEAKS = [("task id", r"\bT-\d+"), ("project id", r"\bPRJ-[A-Z0-9_]+"), ("decisio
          ("iso date", r"\b\d{4}-\d{2}-\d{2}\b"), ("tool name", r"\bpa\.py\b|\bvault\b|\bfrontmatter\b")]
 
 
+OPAQUE = re.compile(r"(?<![\w-])(?:[A-Z]{1,3}\d{1,2}|DEC\d+|PIL\d+)(?![\w-])")
+OPAQUE_OK = re.compile(r"^(?:S\d+|Q\d|W\d+)$")
+
+
+def load_glossary(v, ctx):
+    """<ctx>/_glossary.md. codes: forbidden labels -> name. terms: allowed words -> meaning for the subagent."""
+    codes, terms, section = {}, {}, None
+    p = v.root / ctx / "_glossary.md"
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# "):
+                section = line[2:].strip()
+            elif " | " in line and not line.startswith("<!--"):
+                c = [x.strip() for x in line.split(" | ")]
+                if section == "codes":
+                    codes[c[0]] = c[1]
+                elif section == "terms":
+                    terms[c[0]] = c[1]
+    return codes, terms
+
+
+def expand_codes(text, codes):
+    if not codes:
+        return text
+    pat = r"(?<![\w-])(%s)(?![\w-])" % "|".join(sorted(map(re.escape, codes), key=len, reverse=True))
+    return re.sub(pat, lambda m: codes[m.group(1)], text)
+
+
 def read_prefs(v):
     out, p = dict(PREF_DEFAULT), v.root / PREFS
     if p.exists():
@@ -1190,13 +1278,21 @@ def owner_field(v, key):
     return m.group(1).strip() if m else ""
 
 
-def build_compose(v, intent, ctx, project=None, as_of=None):
+def build_compose(v, intent, ctx, project=None, as_of=None, on=None):
     """single input of the humanizer: rules + prefs + id-free data. holds no id, code or path."""
     prefs = read_prefs(v)
     if prefs["lang"] == "auto" and owner_field(v, "chat_lang") in ("es", "en"):
         prefs["lang"] = owner_field(v, "chat_lang")
-    out = ["# template", response_template(intent), "# prefs", " ".join("%s=%s" % kv for kv in prefs.items()),
-           "# data", build_brief(v, intent, ctx, project, "human", as_of)]
+    out = ["# template", response_template(intent), "# prefs", " ".join("%s=%s" % kv for kv in prefs.items()) + " you=" + (owner_field(v, "name") or "unknown").split()[0],
+           "# data"]
+    codes, terms = load_glossary(v, ctx)
+    data = expand_codes(build_brief(v, intent, ctx, project, "human", as_of, on=on), codes)
+    out.append(data)
+    used = [(t, m) for t, m in terms.items() if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(t), data)]
+    if used:
+        out += ["# glossary"] + ["%s = %s" % u for u in used]
+    if codes:
+        out.append("avoid: (?<![\\w-])(?:%s)(?![\\w-])" % "|".join(sorted(map(re.escape, codes))))
     if prefs["diagrams"] == "auto" and intent in ("project", "pending", "risks"):
         dg, n = build_diagram(v, ctx, project if intent == "project" else None)
         if dg:
@@ -1231,6 +1327,24 @@ def lint_output(text, payload=None):
         if hit:
             errs.append("LEAK %s: %s" % (name, hit.group(0).strip()))
     if payload is not None:
+        for terms in re.findall(r"^avoid: (.+)$", payload, re.M):
+            hit = re.search(terms, text, re.I)
+            if hit:
+                errs.append("AVOID_TERM %s" % hit.group(0))
+        if re.search(r"^# (?:today|on) ", payload, re.M):
+            you = (re.findall(r"\byou=(\S+)", payload) or [""])[0].lower()
+            for row in payload.splitlines():
+                c = row.split("\t")
+                if len(c) >= 5 and c[0] in ("overdue", "today", "week", "later", "nodate") and c[2]:
+                    first = c[2].split()[0].lower()
+                    if first != you and first not in text.lower():
+                        errs.append("MISSING_OWNER %s" % c[2])
+        said_dates = natural_dates(text)
+        for c in (row.split("\t") for row in payload.splitlines()):
+            if len(c) >= 4 and re.fullmatch(r"S\d+", c[1]) and iso_ok(c[3]) and re.search(r"\b%s\b" % c[1], text):
+                end = datetime.date.fromisoformat(c[3])
+                if (end.month, end.day) not in said_dates:
+                    errs.append("MISSING_SPRINT_DATE %s" % c[1])
         # MM-DD also covers short dates users write inside free text
         known = {(int(m), int(d)) for m, d in re.findall(r"(?<!\d)(\d{2})-(\d{2})(?!\d)", payload)} | natural_dates(payload)
         for md in sorted(natural_dates(text) - known):
@@ -1378,10 +1492,10 @@ def table(head, rows):
     return "\n".join(["| %s |" % " | ".join(head), "|" + "---|" * len(head)] + ["| %s |" % " | ".join(cell(x) for x in r) for r in rows])
 
 
-def render_answer(v, intent, ctx, project=None, lang="es", as_of=None):
+def render_answer(v, intent, ctx, project=None, lang="es", as_of=None, full=False, on=None):
     """deterministic answer: no model, so no invented facts. task text stays as stored."""
     prefs = read_prefs(v)
-    d = brief_data(v, intent, ctx, project, as_of)
+    d = brief_data(v, intent, ctx, project, as_of, on=on)
     L, rows, out = LABELS[lang], d["rows"], []
     state = {"proposed": L["unconfirmed"], "confirmed": L["pending"], "doing": L["progress"], "blocked": L["blocked"]}
     if d["focus"]:
@@ -1389,7 +1503,7 @@ def render_answer(v, intent, ctx, project=None, lang="es", as_of=None):
                                   " " + L["target"] % nat_date(d["focus"]["due"], lang) if d["focus"]["due"] else ""))
     if intent == "today" and rows:
         out.append(L["lead_today"] % (sum(r[0] == "overdue" for r in rows), sum(r[0] == "today" for r in rows)))
-    cap = 8 if prefs["length"] == "short" else len(rows)
+    cap = 8 if prefs["length"] == "short" and not full else max(len(rows), len(d["risks"]), 1)
     shown = []
     for b, t, more, frees in rows[:cap]:
         text = speak(t["text"], lang) + (L["stages"] % more if more else "")
@@ -1404,6 +1518,10 @@ def render_answer(v, intent, ctx, project=None, lang="es", as_of=None):
             out.append(table(head, shown))
         if len(rows) > cap:
             out.append(L["more"] % (len(rows) - cap) + ".")
+    if d["sprints"]:
+        out.append(table(["Plan", "Sprint", L["date"], L["task"], L["owner"], L["state"]],
+                         [[s["stream"], s["sprint"], nat_date(s["end"], lang) if s["end"] else "-", speak(sprint_text(s["text"]), lang),
+                           s["owner"] or L["none"], state.get(s["state"], s["state"]) or "-"] for s in d["sprints"]]))
     if d["agenda"]:
         out.append("%s:\n%s" % (L["agenda"], "\n".join("- %s: %s" % (nat_day(a["date"], lang), speak(a["text"], lang)) for a in d["agenda"])))
     if d["risks"]:
@@ -1415,33 +1533,109 @@ def render_answer(v, intent, ctx, project=None, lang="es", as_of=None):
         dg, _ = build_diagram(v, ctx, project if intent == "project" else None)
         if dg:
             out.append("```mermaid\n%s\n```" % dg)
-    if not out or (intent in ("today", "week", "upcoming", "pending", "unblock") and not rows and not d["agenda"]):
+    if not out or (intent in ("today", "week", "upcoming", "pending", "unblock", "sprints", "on") and not rows and not d["agenda"] and not d["sprints"]):
         return L["nothing"]
     cand = [r for r in rows if r[0] in ("overdue", "today")] or (rows if intent == "unblock" else [])
     if cand:
         top = max(cand, key=lambda r: r[3])
         out.append(L["next"] % speak(top[1]["text"], lang) + (L["unlocks"] % top[3] if top[3] else "") + ".")
-    return "\n\n".join(out)
+    return expand_codes("\n\n".join(out), load_glossary(v, ctx)[0])
 
 
 def cmd_ask(v, a):
-    """single read entry. no --question: Python answers. with --question: payload for the subagent."""
+    """single read entry: Python gathers facts, the subagent writes every answer. --raw = plain Python text for debug."""
     prefs = read_prefs(v)
     lang = a.lang or (prefs["lang"] if prefs["lang"] != "auto" else None) or \
         (owner_field(v, "chat_lang") if owner_field(v, "chat_lang") in ("es", "en") else "es")
     try:
-        if not a.question:
-            print("ROUTE direct\n")
-            print(render_answer(v, a.intent, a.ctx, a.project, lang, a.as_of))
+        if a.raw:
+            print(render_answer(v, a.intent, a.ctx, a.project, lang, a.as_of, True, a.date))
             return 0
-        payload = build_compose(v, a.intent, a.ctx, a.project, a.as_of)
+        payload = build_compose(v, a.intent, a.ctx, a.project, a.as_of, a.date)
     except ValueError as e:
         print("ERR", e)
         return 1
     fd, path = tempfile.mkstemp(prefix="pa-payload-", suffix=".txt")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(payload)
-    print("ROUTE subagent\nPAYLOAD_FILE %s\n\nPregunta del usuario: %s\n\n%s" % (path, a.question, payload))
+    print("PAYLOAD_FILE %s\n\nPregunta del usuario: %s\n\n%s" % (path, a.question or "(see # template)", payload))
+    return 0
+
+
+FOLLOW_UP = re.compile(r"^(monitor|track|follow|watch|risk gate)\b", re.I)
+CHECK_SECTIONS = {"mine": "Mis acciones", "others": "Vencidos de otros: perseguir"}
+
+
+def checklist_items(v, ctx, today, horizon, me):
+    """action checklist: mine (overdue | due within horizon | no due) + others overdue.
+    drops follow-ups (monitor/track/follow/risk gate) and doing items unless due today or overdue."""
+    names = {d.name: (f or {}).get("name", d.name) for d, f in v.projects(ctx)}
+    end = (datetime.date.fromisoformat(today) + datetime.timedelta(days=horizon)).isoformat()
+    me = me.lower().split()
+    out = []
+    for x in v.tasks(ctx):
+        t = x["t"]
+        if t["done"] or t.get("st") not in ("confirmed", "doing", "blocked") or x["pstatus"] in P_ARCH:
+            continue
+        due = t.get("due") or ""
+        late = bool(due) and due < today
+        if not (due and due <= today) and (FOLLOW_UP.match(t["text"]) or t.get("st") == "doing"):
+            continue
+        owner = t["owner"] or ""
+        mine = bool(me) and any(w in me for w in re.split(r"[+,\s]+", owner.lower()) if w)
+        grp = "mine" if mine and (not due or due <= end) else "others" if late and not mine else None
+        if not grp:
+            continue
+        fp = hashlib.sha1("|".join([t["text"], t.get("note", ""), due, owner, t.get("st", "")]).encode()).hexdigest()[:10]
+        out.append({"id": t.get("id"), "t": t["text"], "note": t.get("note", ""), "own": owner, "due": due,
+                    "pri": t.get("pri", ""), "st": t.get("st"), "grp": grp, "fp": fp,
+                    "prj": names.get(x["scope"], "Light items") if x["scope"] != "tracker" else "Light items"})
+    return out
+
+
+def checklist_cache(v, ctx):
+    return v.root / ".pro-assistant" / "cache" / ("checklist-%s.json" % ctx)
+
+
+def cmd_checklist(v, a):
+    """static page. Python picks items; the model only supplies display text (user lang) through --human."""
+    if a.ctx not in v.contexts:
+        print("ERR unknown ctx %s" % a.ctx)
+        return 1
+    today = a.as_of or datetime.date.today().isoformat()
+    me = a.me or owner_field(v, "name").split(" ")[0]
+    items = checklist_items(v, a.ctx, today, a.horizon, me)
+    cpath = checklist_cache(v, a.ctx)
+    cache = json.loads(cpath.read_text(encoding="utf-8")) if cpath.exists() else {}
+    if a.human:
+        new = json.loads(Path(a.human).read_text(encoding="utf-8"))
+        fps = {i["id"]: i["fp"] for i in items}
+        for tid, txt in new.items():
+            if tid in fps and isinstance(txt, str) and txt.strip():
+                cache[tid] = {"fp": fps[tid], "text": txt.strip()}
+        cpath.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(cpath, json.dumps(cache, ensure_ascii=False, indent=1))
+    stale = [i for i in items if cache.get(i["id"], {}).get("fp") != i["fp"]]
+    if a.missing:
+        print(tsv(["id", "project", "owner", "due", "st", "text", "note"]))
+        for i in stale:
+            print(tsv([i["id"], i["prj"], i["own"], i["due"], i["st"], i["t"], i["note"]]))
+        return 0
+    for i in items:
+        c = cache.get(i["id"], {})
+        i["h"] = c["text"] if c.get("fp") == i["fp"] else ""
+    data = {"today": today, "ctx": a.ctx, "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "sections": CHECK_SECTIONS, "items": items}
+    blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    html = (TPL / "checklist.html").read_text(encoding="utf-8").replace(
+        '/*__DATA__*/{"today":"","ctx":"","generated":"","sections":{},"items":[]}', blob, 1)
+    out = Path(a.out).expanduser() if a.out else v.root / ".pro-assistant" / ("checklist-%s.html" % a.ctx)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(out, html)
+    n = {g: sum(1 for i in items if i["grp"] == g) for g in CHECK_SECTIONS}
+    print("CHECKLIST %s items=%d mine=%d others=%d no_text=%d" % (out, len(items), n["mine"], n["others"], len(stale)))
+    if a.open:
+        webbrowser.open(out.as_uri())
     return 0
 
 
@@ -1484,11 +1678,14 @@ def main():
     p.add_argument("--audience", default="agent", choices=["agent", "human"])
     p.add_argument("--as-of")
     p.add_argument("--expand", action="store_true")
+    p.add_argument("--date")
     p = sp.add_parser("ask")
     p.add_argument("intent", choices=INTENTS)
     p.add_argument("--ctx", required=True)
     p.add_argument("--project")
     p.add_argument("--question")
+    p.add_argument("--raw", action="store_true")
+    p.add_argument("--date")
     p.add_argument("--lang", choices=["es", "en"])
     p.add_argument("--as-of")
     p = sp.add_parser("graph")
@@ -1531,6 +1728,15 @@ def main():
     p.add_argument("key", nargs="?")
     p.add_argument("value", nargs="?")
     p.add_argument("--yes", action="store_true")
+    p = sp.add_parser("checklist")
+    p.add_argument("--ctx", required=True)
+    p.add_argument("--horizon", type=int, default=14)
+    p.add_argument("--me")
+    p.add_argument("--as-of")
+    p.add_argument("--human")
+    p.add_argument("--missing", action="store_true")
+    p.add_argument("--out")
+    p.add_argument("--open", action="store_true")
     p = sp.add_parser("lint-output")
     p.add_argument("--payload")
     a = ap.parse_args()
@@ -1546,7 +1752,8 @@ def main():
     fn = {"init": cmd_init, "sync": cmd_sync, "validate": cmd_validate, "next-id": cmd_next_id,
           "check": cmd_check, "new-project": cmd_new_project, "upgrade": cmd_upgrade, "model": cmd_model, "view": cmd_view,
           "open": cmd_open, "brief": cmd_brief, "apply": cmd_apply, "compose": cmd_compose,
-          "prefs": cmd_prefs, "lint-output": cmd_lint_output, "ask": cmd_ask, "graph": cmd_graph, "dupes": cmd_dupes}[a.cmd]
+          "prefs": cmd_prefs, "lint-output": cmd_lint_output, "ask": cmd_ask, "graph": cmd_graph, "dupes": cmd_dupes,
+          "checklist": cmd_checklist}[a.cmd]
     return fn(v, a)
 
 

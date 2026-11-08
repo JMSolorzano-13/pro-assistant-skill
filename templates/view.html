@@ -45,9 +45,10 @@ const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",
 const PAL=["#7c3aed","#db2777","#ea580c","#2563eb","#0891b2","#059669","#ca8a04","#dc2626","#4f46e5","#0d9488"];
 const ST=["pending","doing","blocked","proposed","done"];
 const dd=s=>Date.UTC(+s.slice(0,4),+s.slice(5,7)-1,+s.slice(8,10))/864e5,dbt=(a,b)=>Math.round(dd(b)-dd(a)),addD=(s,n)=>new Date((dd(s)+n)*864e5).toISOString().slice(0,10);
-const defF=()=>({ctx:"",proj:"",st:[],owner:"",pri:"",from:"",to:"",preset:"",overdue:false,crit:false,arch:false,q:""});
+const emptyF=()=>({ctx:"",proj:"",st:[],owner:"",pri:"",from:"",to:"",preset:"",overdue:false,crit:false,arch:false,q:""});
+const defF=()=>({...emptyF(),st:["pending","doing"],preset:"week"});
 let M=null,tab="dep",z=1,F=defF(),timer=null,TW=1,TH=1,EDGES=[],BASE=null,LK={t:{},p:{}};
-try{const h=JSON.parse(decodeURIComponent(location.hash.slice(1)));if(h.tab)tab=h.tab;if(h.F)F={...defF(),...h.F};if(h.lang)lang=h.lang}catch(e){}
+try{const h=JSON.parse(decodeURIComponent(location.hash.slice(1)));if(h.tab)tab=h.tab;if(h.F)F={...emptyF(),...h.F};if(h.lang)lang=h.lang}catch(e){}
 const saveHash=()=>{try{history.replaceState(null,"","#"+encodeURIComponent(JSON.stringify({tab,F,lang})))}catch(e){}};
 
 function derive(){
@@ -181,7 +182,7 @@ function buildFlt(){const tk=M.ctxs.flatMap(c=>c.tasks),own=[...new Set(tk.map(k
   const on=(i,fn)=>$(i).addEventListener("change",fn);
   on("fc",e=>{F.ctx=e.target.value;F.proj="";buildFlt();render()});on("fp",e=>{F.proj=e.target.value;render()});on("fo",e=>{F.owner=e.target.value;render()});on("fr",e=>{F.pri=e.target.value;render()});
   on("fd",e=>{F.preset=e.target.value;if(F.preset)applyPreset();else{F.from="";F.to=""}buildFlt();render()});on("ff",e=>{F.from=e.target.value;F.preset="";$("fd").value="";render()});on("ft",e=>{F.to=e.target.value;F.preset="";$("fd").value="";render()});on("fv",e=>{F.overdue=e.target.checked;render()});on("fk",e=>{F.crit=e.target.checked;render()});on("fa",e=>{F.arch=e.target.checked;render()});
-  $("fq").addEventListener("input",e=>{F.q=e.target.value;render()});$("fz").onclick=()=>{F=defF();buildFlt();render()};
+  $("fq").addEventListener("input",e=>{F.q=e.target.value;render()});$("fz").onclick=()=>{F=emptyF();buildFlt();render()};
   $("flt").querySelectorAll("[data-st]").forEach(c=>c.addEventListener("change",()=>{F.st=[...$("flt").querySelectorAll("[data-st]")].filter(x=>x.checked).map(x=>x.dataset.st);render()}))}
 function buildTabs(){$("tabs").innerHTML=["dep","time","proj"].map(k=>`<button data-tab="${k}" class="${tab===k?"on":""}">${t(k)}</button>`).join("");$("tabs").querySelectorAll("button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;buildTabs();render()})}
 function chrome(){document.documentElement.lang=lang;$("ttl").textContent=t("ttl");$("bf").textContent=t("fit");$("lng").textContent=lang==="es"?"EN":"ES";buildTabs();if(M)buildFlt()}

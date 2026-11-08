@@ -1,0 +1,65 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Acciones pendientes</title><style>
+:root{--bg:#f7f7f5;--card:#fff;--tx:#1d1d1b;--mu:#6b6b66;--bd:#e2e2dc;--ac:#2f6fdf;--od:#c0392b;--pj:#eef2fb}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#20201e;--tx:#ececea;--mu:#9a9a94;--bd:#33332f;--ac:#6b9bff;--od:#ff6b5b;--pj:#262c3a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 -apple-system,system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--bd);padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:16px;margin:0 12px 0 0}input,select,textarea,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:4px 8px}
+button{cursor:pointer}button.pr{background:var(--ac);color:#fff;border-color:var(--ac)}main{max-width:1000px;margin:0 auto;padding:12px 16px 80px}
+h2{font-size:15px;margin:22px 0 6px}h3{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mu);margin:16px 0 6px}
+.it{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin:6px 0}.it.ch{border-left:4px solid var(--ac)}.it.dn{opacity:.55}
+.top{display:flex;gap:8px;align-items:flex-start}.top input[type=checkbox]{margin-top:3px;width:16px;height:16px}.t{flex:1}
+.pj{display:inline-block;font-size:11px;background:var(--pj);border-radius:4px;padding:0 6px;margin-bottom:2px;color:var(--mu)}
+.meta{font-size:12px;color:var(--mu);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.od{color:var(--od);font-weight:600}.b{padding:0 6px;border-radius:4px;border:1px solid var(--bd)}
+.bl{color:var(--od);border-color:var(--od)}.raw{color:var(--od);font-size:11px}
+.ctl{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.ctl textarea{flex:1 1 100%;min-height:34px;resize:vertical}
+details{font-size:12px;color:var(--mu);margin-top:4px}#out{width:100%;min-height:160px;margin-top:8px;display:none}.cnt,.gen{color:var(--mu);font-size:12px}
+</style></head><body>
+<header><h1>Acciones pendientes</h1>
+<input id="q" placeholder="Buscar..." size="14">
+<select id="gb" title="Agrupar"><option value="sec">Agrupar: sección</option><option value="prj">Agrupar: proyecto</option></select>
+<select id="fp"><option value="">Todos los proyectos</option></select>
+<label><input type="checkbox" id="fod"> Solo vencidos</label><label><input type="checkbox" id="fch"> Solo editados</label>
+<span class="cnt" id="cnt"></span><span style="flex:1"></span>
+<button class="pr" id="ex">Copiar cambios</button><button id="rs">Limpiar</button></header>
+<main><div class="gen" id="gen"></div><textarea id="out" readonly></textarea><div id="list"></div></main>
+<script>
+const DATA=/*__DATA__*/{"today":"","ctx":"","generated":"","sections":{},"items":[]};
+const D=DATA.items,TODAY=DATA.today,K="pa-checklist-"+DATA.ctx;
+let S={};try{S=JSON.parse(localStorage.getItem(K)||"{}")}catch(e){}
+for(const id in S){const i=D.find(x=>x.id===id);if(!i||S[id].fp!==i.fp)delete S[id]}
+const save=()=>{try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}};save();
+let G="sec";try{G=localStorage.getItem(K+"-gb")||"sec"}catch(e){}
+const $=id=>document.getElementById(id),pr={high:0,med:1,low:2};
+function esc(x){return (x||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function changed(i){const s=S[i.id];return s&&((s.st&&s.st!==i.st)||(s.due&&s.due!==i.due)||(s.a&&s.a.trim()))}
+function sortIt(a,b){const x=a.due||"9",y=b.due||"9";return x<y?-1:x>y?1:(pr[a.pri]??3)-(pr[b.pri]??3)}
+function card(i){const s=S[i.id]||{},od=i.due&&i.due<TODAY,st=s.st||i.st;
+return `<div class="it ${changed(i)?"ch":""} ${st==="done"?"dn":""}" data-id="${i.id}"><div class="top"><input type="checkbox" data-f="done" ${st==="done"?"checked":""} title="Marcar hecho">
+<div class="t">${G==="sec"?`<span class="pj">${esc(i.prj)}</span><br>`:`<span class="pj">${esc(DATA.sections[i.grp]||"")}</span><br>`}${esc(i.h||i.t)}${i.h?"":' <span class="raw">(sin descripción humanizada)</span>'}
+<div class="meta"><span>${i.id}</span><span>@${esc(i.own||"sin responsable")}</span><span class="${od?"od":""}">${i.due?"vence "+i.due:"sin fecha"}${od?" (vencido)":""}</span>${i.pri?`<span class="b">${i.pri}</span>`:""}${i.st==="blocked"?'<span class="b bl">blocked</span>':""}${i.st==="doing"?'<span class="b">doing</span>':""}</div>
+<details><summary>texto original</summary>${esc(i.t)}${i.note?"<br>"+esc(i.note):""}</details></div></div>
+<div class="ctl"><select data-f="st">${["confirmed","doing","blocked","done","cancelled"].map(o=>`<option ${o===st?"selected":""}>${o}</option>`).join("")}</select>
+<input type="date" data-f="due" value="${s.due||i.due}" title="Nueva fecha"><textarea data-f="a" placeholder="Respuesta / avance / siguiente paso...">${esc(s.a||"")}</textarea></div></div>`}
+function render(){const q=$("q").value.toLowerCase(),fp=$("fp").value,fod=$("fod").checked,fch=$("fch").checked;
+const L=D.filter(i=>(!q||(i.id+i.h+i.t+i.own+i.prj+i.note).toLowerCase().includes(q))&&(!fp||i.prj===fp)&&(!fod||(i.due&&i.due<TODAY))&&(!fch||changed(i)));
+let h="";
+if(G==="prj"){const by={};L.forEach(i=>(by[i.prj]=by[i.prj]||[]).push(i));
+ for(const p of Object.keys(by).sort()){h+=`<h2>${esc(p)} (${by[p].length})</h2>`+by[p].sort(sortIt).map(card).join("")}}
+else{for(const g of Object.keys(DATA.sections)){const gi=L.filter(i=>i.grp===g);if(!gi.length)continue;h+=`<h2>${esc(DATA.sections[g])} (${gi.length})</h2>`;
+ const by={};gi.forEach(i=>(by[i.prj]=by[i.prj]||[]).push(i));
+ for(const p of Object.keys(by).sort())h+=`<h3>${esc(p)}</h3>`+by[p].sort(sortIt).map(card).join("")}}
+$("list").innerHTML=h||"<p>Nada pendiente con estos filtros.</p>";$("cnt").textContent=`${L.length} visibles · ${D.filter(changed).length} editados`}
+[...new Set(D.map(i=>i.prj))].sort().forEach(p=>{const o=document.createElement("option");o.value=o.textContent=p;$("fp").appendChild(o)});
+$("gb").value=G;$("gen").textContent=`Generado ${DATA.generated} desde el vault (${DATA.ctx}). Hoy: ${TODAY}.`;
+$("list").addEventListener("input",e=>{const el=e.target,f=el.dataset.f;if(!f)return;const id=el.closest(".it").dataset.id,i=D.find(x=>x.id===id);S[id]=S[id]||{fp:i.fp};
+if(f==="done")S[id].st=el.checked?"done":i.st;else if(f==="a")S[id].a=el.value;else S[id][f]=el.value;save();
+if(f!=="a")render();else{el.closest(".it").classList.toggle("ch",!!changed(i));$("cnt").textContent=`${D.filter(changed).length} editados`}});
+["q","fp","fod","fch"].forEach(x=>$(x).addEventListener("input",render));
+$("gb").addEventListener("input",()=>{G=$("gb").value;try{localStorage.setItem(K+"-gb",G)}catch(e){}render()});
+$("ex").onclick=()=>{const L=D.filter(changed).map(i=>{const s=S[i.id];let r=`- ${i.id} | ${i.prj} | ${i.h||i.t}`;if(s.st&&s.st!==i.st)r+=` | st:${i.st}->${s.st}`;if(s.due&&s.due!==i.due)r+=` | due:${i.due||"none"}->${s.due}`;if(s.a&&s.a.trim())r+=` | resp: ${s.a.trim().replace(/\n+/g," / ")}`;return r});
+const t=`Actualizaciones pendientes (${TODAY}, ${DATA.ctx}):\n`+L.join("\n");const o=$("out");o.style.display="block";o.value=t;o.select();
+navigator.clipboard&&navigator.clipboard.writeText(t).catch(()=>{});$("ex").textContent=`Copiado (${L.length})`;setTimeout(()=>$("ex").textContent="Copiar cambios",2000)};
+$("rs").onclick=()=>{if(confirm("¿Borrar todas tus respuestas locales?")){S={};save();render();$("out").style.display="none"}};
+render();
+</script></body></html>

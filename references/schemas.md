@@ -30,6 +30,13 @@ Context dir names = slug (lowercase, hyphens).
 - pkg: optional slug. stage: optional verb, needs pkg. Same pkg = one piece of work; brief shows active stage (earliest due).
 - rel: optional comma refs (T-|D-|R-|min-) = memory links, read by `graph --of`. dup_of: T-id, set by merge. Relations live here; graph is built in memory per call, no store.
 
+## sprint plan in index.md body (read by `ask sprints`)
+`- **<stream> sprint plan:**` then `  - **S23** (YYYY-MM-DD..YYYY-MM-DD): delivery text. T-xxxx/T-yyyy`. Window optional. Owner+state come from the cited tasks.
+
+## plain names (CRITICAL)
+Never store or say invented short labels: session numbers, plan codes, decision codes (R3, B2, DEC1). Write the name: "Fiscal context session". Real ids stay only in id fields (T-, D-, R-, PRJ-), sprints/quarters S21, Q1 OK. Source doc uses labels -> translate on capture.
+`<ctx>/_glossary.md` (optional): `# codes` = `code | name | meaning`, pa.py expands them and lint rejects them; `# terms` = `term | meaning`, sent to subagent only when data uses them. `validate` warns on labels in open tasks.
+
 ## project index.md fm
 type,id(PRJ-SLUG),name,alias[],ctx,status,pri,start,due,dep[],blocks[],stake[],reviewed
 status: active|paused|future (open) | obsolete|cancelled|completed (archived: excluded from daily queries unless asked; stay in place, no move).
@@ -49,3 +56,6 @@ sections: light items | agenda (`date | text | ref:T-xxxx`) | review (last_weekl
 
 ## minutes
 minutes/min-YYYY-MM-DD[-n].md from templates/minute.md. Extracted commitments -> actions.md as st:proposed, src:min-<date>.
+
+## cache (not vault data)
+`.pro-assistant/cache/` = regenerable UI cache. checklist-<ctx>.json may hold user-lang text (only exception to EN-only). never source of facts.

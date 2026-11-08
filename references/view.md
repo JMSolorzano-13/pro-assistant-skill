@@ -16,6 +16,7 @@ Nothing inferred. Missing field -> null. No dates -> shown, no date features. No
 
 ## views
 dep = task DAG per ctx, columns by depth. time = axis by date, rows per project (+tracker, agenda), undated column. proj = project DAG (dep/blocks) + progress + risk badge.
+First open (no saved link state): Status pending+doing and dates = week. Clear button empties all.
 Filters: ctx, project, status, owner, pri, date combo (today|week Mon-Sun|current Q|next Q -> auto from/to; recomputed each refresh; manual from/to resets combo) + date range, overdue, critical path, archived, text. Click node = detail (read-only).
 Status: pending|doing|blocked|proposed|done; dashed = waiting on deps; red = overdue.
 

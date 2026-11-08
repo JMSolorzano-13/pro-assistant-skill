@@ -196,13 +196,12 @@ class TestEngine(Base):
     def test_ask_direct_answer_has_no_codes_in_each_language(self):
         for lang in ("es", "en"):
             for intent in ("today", "week", "upcoming", "pending", "risks", "unblock"):
-                out = run(self.v, "ask", intent, "--ctx", "acme-corp", "--lang", lang, "--as-of", "2026-10-20")[1]
-                self.assertTrue(out.startswith("ROUTE direct"))
+                out = run(self.v, "ask", intent, "--ctx", "acme-corp", "--lang", lang, "--as-of", "2026-10-20", "--raw")[1]
                 self.assertNotRegex(out, r"\bT-\d+|PRJ-|\.md|\b\d{4}-\d{2}-\d{2}\b")
 
-    def test_ask_with_question_routes_to_subagent(self):
+    def test_ask_always_builds_subagent_payload(self):
         out = run(self.v, "ask", "pending", "--ctx", "acme-corp", "--question", "que hago?")[1]
-        self.assertTrue(out.startswith("ROUTE subagent\nPAYLOAD_FILE "))
+        self.assertTrue(out.startswith("PAYLOAD_FILE "))
         self.assertIn("# template", out)
 
     def test_apply_refuses_closed_task(self):
@@ -275,5 +274,137 @@ class TestEngine(Base):
         self.assertEqual(run(self.v, "validate")[0], 0)
 
 
+class TestSprints(Base):
+    def ask(self):
+        return run(self.v, "ask", "sprints", "--ctx", "acme-corp", "--project", "alfa-migration", "--question", "fechas?")[1]
+
+    def test_rows_have_window_owner_state_and_no_codes(self):
+        out = self.ask()
+        self.assertIn("Alfa\tS02\t2026-11-09\t2026-11-20\tcutover rehearsal on ST\tjuan\tpending", out)
+        self.assertIn("Alfa\tS03\t\t\tupdate runbook\tana\tpending", out)
+        self.assertNotRegex(out, r"\bT-\d+")
+        self.assertIn("GL=Go Live", out)
+
+    def test_direct_answer_lists_plans_without_codes(self):
+        out = run(self.v, "ask", "sprints", "--ctx", "acme-corp", "--project", "alfa-migration", "--raw")[1]
+        self.assertIn("20 de noviembre de 2026", out)
+        self.assertNotRegex(out, r"\bT-\d+")
+
+    def test_agent_brief_keeps_open_ids(self):
+        out = run(self.v, "brief", "sprints", "--ctx", "acme-corp", "--project", "alfa-migration")[1]
+        self.assertIn("T-0003", out)
+
+    def lint(self, text, payload):
+        f = self.v / "p.txt"
+        f.write_text(payload)
+        r = subprocess.run([sys.executable, str(PA), "--vault", str(self.v), "lint-output", "--payload", str(f)], input=text, capture_output=True, text=True)
+        return r.stdout
+
+    def test_lint_flags_avoided_term_and_missing_sprint_date(self):
+        payload = "avoid: disponibilidad general\nAlfa\tS02\t2026-11-09\t2026-11-20\tx\tjuan\tpending\n"
+        self.assertIn("AVOID_TERM", self.lint("Meta: disponibilidad general", payload))
+        self.assertIn("MISSING_SPRINT_DATE S02", self.lint("S02 entrega x", payload))
+        self.assertEqual(self.lint("S02 entrega x el 20 de noviembre", payload).strip(), "OK")
+
+
+class TestAskOn(Base):
+    def test_lists_only_that_date_with_every_row(self):
+        f = self.v / "personal/tracker.md"
+        f.write_text(f.read_text() + "".join("- [ ] Item number x%d | id:T-08%02d | @juan | due:2026-10-20 | pri:low | st:confirmed\n" % (i, i) for i in range(10)))
+        out = run(self.v, "ask", "on", "--ctx", "personal", "--date", "2026-10-20", "--as-of", "2026-10-22")[1]
+        self.assertIn("asked_date\t2026-10-20 Tue", out)
+        self.assertIn("Item number x9", out)
+        self.assertNotRegex(out, r"\bT-\d+")
+        self.assertIn("Item number x9", run(self.v, "ask", "on", "--ctx", "personal", "--date", "2026-10-20", "--raw")[1])
+
+    def test_on_needs_a_date(self):
+        self.assertEqual(run(self.v, "ask", "on", "--ctx", "personal")[0], 1)
+
+    def test_unknown_ctx_gives_error(self):
+        self.assertEqual(run(self.v, "ask", "today", "--ctx", "nope")[0], 1)
+
+    def test_lint_requires_other_people_on_full_lists(self):
+        f = self.v / "p.txt"
+        f.write_text("# prefs\nlength=short you=Juan\n# today X 2026-10-20\ntoday\tThing\tAna Ruiz\t2026-10-20 Tue\tpending\t\t\t\t\ntoday\tOther\tJuan\t2026-10-20 Tue\tpending\t\t\t\t\n")
+        r = subprocess.run([sys.executable, str(PA), "--vault", str(self.v), "lint-output", "--payload", str(f)], input="Tienes dos tareas", capture_output=True, text=True)
+        self.assertIn("MISSING_OWNER Ana Ruiz", r.stdout)
+        self.assertNotIn("Juan", r.stdout)
+
+
+class TestGlossary(Base):
+    def setUp(self):
+        super().setUp()
+        (self.v / "acme-corp/_glossary.md").write_text("# codes\nR5 | alignment meeting | all leads\n# terms\nSDD | Spec-Driven Development\nRFC | design proposal\n")
+        f = self.v / "acme-corp/tracker.md"
+        f.write_text(f.read_text() + "- [ ] Prepare R5 SDD notes | id:T-0090 | @ana | due:2026-10-20 | pri:low | kind:task | st:confirmed\n")
+
+    def ask(self, *extra):
+        return run(self.v, "ask", "today", "--ctx", "acme-corp", "--as-of", "2026-10-20", *extra)[1]
+
+    def test_codes_expand_and_terms_reach_subagent(self):
+        out = self.ask()
+        self.assertIn("Prepare alignment meeting SDD notes", out)
+        self.assertIn("SDD = Spec-Driven Development", out)
+        self.assertNotIn("RFC =", out)
+
+    def test_raw_expands_codes(self):
+        self.assertIn("Prepare alignment meeting SDD notes", self.ask("--raw"))
+
+    def test_lint_rejects_glossary_code(self):
+        path = next(l for l in self.ask().splitlines() if l.startswith("PAYLOAD_FILE ")).split(" ", 1)[1]
+        r = subprocess.run([sys.executable, str(PA), "--vault", str(self.v), "lint-output", "--payload", path], input="Junta R5", capture_output=True, text=True)
+        self.assertIn("AVOID_TERM R5", r.stdout)
+
+    def test_validate_warns_on_opaque_label(self):
+        code, out = run(self.v, "validate")
+        self.assertEqual(code, 0)
+        self.assertIn("opaque code R5", out)
+        self.assertNotIn("opaque code S", out)
+
+
+class TestWaitsOn(Base):
+    def test_human_lists_only_open_blockers(self):
+        run(self.v, "apply", "done", "--ctx", "acme-corp", "--task", "T-0001", "--yes")
+        out = run(self.v, "brief", "pending", "--ctx", "acme-corp", "--audience", "human", "--as-of", "2026-10-20")[1]
+        row = next(l for l in out.splitlines() if "Review schema diff" in l)
+        self.assertNotIn("Send migration plan", row)
+        self.assertIn("Review schema diff", next(l for l in out.splitlines() if "Cutover rehearsal" in l))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChecklist(Base):
+    def page_data(self, out):
+        html = Path(out.split()[1]).read_text(encoding="utf-8") if out.startswith("CHECKLIST") else ""
+        return json.loads(html.split("const DATA=", 1)[1].split(";\nconst D=", 1)[0])
+
+    def run_cl(self, *extra):
+        return run(self.v, "checklist", "--ctx", "acme-corp", "--as-of", "2026-10-26", "--me", "juan",
+                   "--out", str(Path(self.tmp.name) / "cl.html"), *extra)
+
+    def test_picks_actions_and_others_overdue(self):
+        code, out = self.run_cl()
+        self.assertEqual(code, 0)
+        d = self.page_data(out)
+        got = {i["id"]: i["grp"] for i in d["items"]}
+        self.assertEqual(got, {"T-0001": "mine", "T-0005": "mine", "T-0006": "mine", "T-0008": "mine",
+                               "T-0009": "mine", "T-0002": "others"})
+        self.assertTrue(all(i["prj"] for i in d["items"]))
+
+    def test_follow_up_and_future_doing_dropped(self):
+        f = self.v / "acme-corp" / "tracker.md"
+        f.write_text(f.read_text(encoding="utf-8") + "- [ ] Monitor infra costs | id:T-0011 | @juan | due:2026-10-28 | kind:rem | st:confirmed\n", encoding="utf-8")
+        ids = {i["id"] for i in self.page_data(self.run_cl()[1])["items"]}
+        self.assertNotIn("T-0011", ids)
+
+    def test_human_text_cached_until_line_changes(self):
+        self.assertIn("T-0008", self.run_cl("--missing")[1])
+        h = Path(self.tmp.name) / "h.json"
+        h.write_text(json.dumps({"T-0008": "Renovar el certificado SSL </script>"}), encoding="utf-8")
+        d = self.page_data(self.run_cl("--human", str(h))[1])
+        self.assertEqual(next(i["h"] for i in d["items"] if i["id"] == "T-0008"), "Renovar el certificado SSL </script>")
+        self.assertNotIn("T-0008", self.run_cl("--missing")[1])
+        run(self.v, "apply", "due", "--ctx", "acme-corp", "--task", "T-0008", "--due", "2026-10-31", "--yes")
+        self.assertIn("T-0008", self.run_cl("--missing")[1])

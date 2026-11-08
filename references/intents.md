@@ -1,9 +1,9 @@
 # intents
 Resolve vault+ctx first (ask ctx if >1 and unclear). Route by who can answer. Read/write flow -> humanizer.md.
 
-## python answers (`ask <intent>`, no model)
-today | week | upcoming | pending | risks | project (--project) | unblock ("what frees most work").
-Add `--question "<user words>"` only if user asks more than the list: judgement, summary, why, comparison -> subagent.
+## facts from python (`ask <intent>`), answer from subagent
+today | week | upcoming | pending | risks | project (--project) | unblock ("what frees most work") | sprints (delivery dates by sprint).
+on (--date ISO: tasks of one date). Always pass `--question "<user words>"`.
 
 ## backend role + subagent answer
 | intent | ex | role | extra read |
@@ -18,7 +18,7 @@ capture (classify.md -> add) | complete -> done | reschedule -> due | cancel | g
 Project: archive/reactivate/promote -> PM role, edit idx (classify.md, dedupe.md).
 
 ## other
-view -> `open` (view.md) | adopt (adopt.md) | upgrade (versioning.md) | todoist-sync (todoist.md) | init/sync-contexts (init.md, sync-contexts.md).
+view -> `open` (view.md) | checklist / action page -> checklist.md | adopt (adopt.md) | upgrade (versioning.md) | todoist-sync (todoist.md) | init/sync-contexts (init.md, sync-contexts.md).
 
 ## defaults
 Excluded unless asked: archived projects, done, cancelled. Week layout on request: Open(Mon-Tue) | Mid(Wed-Thu) | Close(Fri). Idle project (reviewed >30d) -> flag.
