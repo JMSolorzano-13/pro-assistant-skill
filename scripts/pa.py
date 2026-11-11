@@ -1825,7 +1825,9 @@ def cmd_todoist(v, a):
         push, feedback = [], []
         for i in items:
             c = cache.get(i["id"], {})
-            r = (remote.get(i["td"]) or ({"deleted": True} if a.remote else None)) if i["td"] else None
+            r = remote.get(i["td"]) if i["td"] else None
+            if r is None and i["td"] and a.remote and not i["fin"]:
+                r = {"deleted": True}  # open in vault, absent in Todoist; finished ones need not be fetched
             fb = td_feedback(i, c, r) if r else []
             feedback += fb
             op = td_push(i, c, r, fb, a.ctx)
@@ -1857,6 +1859,8 @@ def cmd_todoist(v, a):
         r = remote.get(td) if td else None
         if not r:
             continue
+        if i["fin"] and r.get("checked"):
+            cache.setdefault(i["id"], {})["closed"] = True  # already closed in Todoist: no close op next time
         if i["id"] in acks:
             c = cache.setdefault(i["id"], {})
             c["seen"] = sorted(set(c.get("seen", [])) | {str(cm.get("id")) for cm in r.get("comments", [])})
