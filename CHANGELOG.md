@@ -3,6 +3,7 @@ Format: Keep a Changelog. semver. Rules: references/versioning.md.
 
 ## [Unreleased]
 ### Added
+- `todoist plan|diff|commit`: two-way Todoist mirror. Sync-time user-lang title (<=12 words) + structured description (qué/por qué/quién/fechas/depende/origen) from line, note, goal, decisions, deps, blocks; key footer `T-xxxx · ctx`. Text cached per vault fingerprint (regenerated only on change). Read back as proposals: new comments, description/title edits, due/priority changes, completed, deleted. User edits never overwritten until `--ack`. Reopen when vault task reopened after we closed it
 - `checklist` cmd: static action page per ctx (mine overdue/next 14 days/no date + others overdue; follow-ups and doing only when due), project label + group/filter by project, answer box per item, copy changes back; user-lang text cached in `.pro-assistant/cache/` via `--missing`/`--human`
 - `<ctx>/_glossary.md`: labels expanded by pa.py and rejected by lint, terms sent to subagent; `validate` warns on opaque labels in open tasks
 - view opens with Status pending+doing and dates = week
@@ -12,6 +13,7 @@ Format: Keep a Changelog. semver. Rules: references/versioning.md.
 ### Fixed
 - human payload listed finished tasks as blockers; waits_on now holds open tasks only
 ### Changed
+- Todoist no longer one-way: md stays truth, Todoist edits enter as confirmed proposals
 - subagent model: Sonnet; Spanish reads better and stays on the asked date, cost accepted
 - every answer goes through the subagent; `ask --raw` = plain Python text for debug
 - response templates rewritten as an assistant voice; never hide tasks

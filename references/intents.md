@@ -18,7 +18,7 @@ capture (classify.md -> add) | complete -> done | reschedule -> due | cancel | g
 Project: archive/reactivate/promote -> PM role, edit idx (classify.md, dedupe.md).
 
 ## other
-view -> `open` (view.md) | checklist / action page -> checklist.md | adopt (adopt.md) | upgrade (versioning.md) | todoist-sync (todoist.md) | init/sync-contexts (init.md, sync-contexts.md).
+view -> `open` (view.md) | checklist / action page -> checklist.md | adopt (adopt.md) | upgrade (versioning.md) | todoist-sync -> `todoist plan|diff|commit` (todoist.md) | init/sync-contexts (init.md, sync-contexts.md).
 
 ## defaults
 Excluded unless asked: archived projects, done, cancelled. Week layout on request: Open(Mon-Tue) | Mid(Wed-Thu) | Close(Fri). Idle project (reviewed >30d) -> flag.

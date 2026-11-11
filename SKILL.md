@@ -10,7 +10,7 @@ Chat lang = user lang (EN|ES). ALL stored text (md, prompts, rules) = EN, cavema
 
 ## Vault resolve (no fixed paths)
 1 user-given path. 2 cwd or parent has `.pro-assistant/config.md`. 3 env `PRO_ASSISTANT_HOME`. 4 none -> run `init`.
-Script: `python3 <skill_dir>/scripts/pa.py --vault <V> <cmd>`. cmds: version init sync validate next-id check new-project upgrade model view open checklist ask apply brief compose graph dupes prefs lint-output.
+Script: `python3 <skill_dir>/scripts/pa.py --vault <V> <cmd>`. cmds: version init sync validate next-id check new-project upgrade model view open checklist ask apply brief compose graph dupes prefs lint-output todoist.
 
 ## Commands
 | cmd | do | read |
@@ -30,7 +30,7 @@ Script: `python3 <skill_dir>/scripts/pa.py --vault <V> <cmd>`. cmds: version ini
 5 Isolate contexts. No cross-ctx unless user asks.
 6 Minutes/transcripts = `st:proposed` until confirmed.
 7 Task in exactly ONE place. Move, never copy.
-8 Roles -> references/agents.md. Todoist (optional) -> references/todoist.md
+8 Roles -> references/agents.md. Todoist (optional, two-way: rich ES text at sync, comments/edits/done read back as proposals) -> references/todoist.md
 9 Vault resolved -> `validate`; version mismatch -> ask, `upgrade`. -> references/versioning.md
 10 Never write short labels (R3, B2, DEC1): name the thing. Old labels + acronyms -> `<ctx>/_glossary.md`. -> references/schemas.md
 11 Load only reference needed. `brief`/`ask` before files; Context/ on demand.

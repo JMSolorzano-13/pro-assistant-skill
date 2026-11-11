@@ -1639,6 +1639,238 @@ def cmd_checklist(v, a):
     return 0
 
 
+TD_PRI = {"high": "p1", "med": "p2", "low": "p4"}
+TD_KEY = re.compile(r"\bT-\d{4,}\b")
+TD_SENT = {"title": "sent_title", "description": "sent_desc", "due": "sent_due", "priority": "sent_pri"}
+
+
+def td_cache_path(v, ctx):
+    return v.root / ".pro-assistant" / "cache" / ("todoist-%s.json" % ctx)
+
+
+def td_load(v, ctx):
+    p = td_cache_path(v, ctx)
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def td_save(v, ctx, cache):
+    p = td_cache_path(v, ctx)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(p, json.dumps(cache, ensure_ascii=False, indent=1, sort_keys=True))
+
+
+def td_norm(s):
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+
+def td_body(desc, tid, ctx):
+    """final Todoist description: model text + fixed key footer (dedupe link)."""
+    return "%s\n\n---\n%s · %s" % (desc.strip(), tid, ctx)
+
+
+def td_strip_key(desc):
+    """description without our key footer."""
+    return re.sub(r"\n*-{3,}\s*\n\s*T-\d{4,}\s*·\s*\S+\s*$", "", (desc or "").strip()).strip()
+
+
+def td_is_legacy(desc):
+    """old mirror descriptions held only ids/ctx: ours, not user text."""
+    rest = re.sub(r"\b[a-z]+:\S+", "", TD_KEY.sub("", desc or ""), flags=re.I)
+    return not re.sub(r"[\s·|,+()\-:]|ctx|siigo|teknosoft|personal", "", rest, flags=re.I)
+
+
+def td_items(v, ctx, project=None):
+    """mirror scope: open tasks with due or td, plus finished tasks with td (to close). adds context for the writer."""
+    names = {d.name: (f or {}).get("name", d.name) for d, f in v.projects(ctx)}
+    goals = {}
+    for d, _ in v.projects(ctx):
+        idx = d / "index.md"
+        if idx.exists():
+            m = re.search(r"^# goal\s*\n(.+)$", idx.read_text(encoding="utf-8"), re.M)
+            goals[d.name] = m.group(1).strip() if m else ""
+    allt = v.tasks(ctx)
+    by_id = {x["t"].get("id"): x for x in allt if x["t"].get("id")}
+    blocks = {}
+    for x in allt:
+        for d in [i for i in x["t"].get("dep", "").split(",") if i]:
+            blocks.setdefault(d, []).append(x["t"].get("id"))
+    out = []
+    for x in allt:
+        t, tid = x["t"], x["t"].get("id")
+        if not tid or x["pstatus"] in P_ARCH or (project and x["scope"] != project):
+            continue
+        fin = t["done"] or t.get("st") in ("done", "cancelled")
+        if (fin and not t.get("td")) or (not fin and not (t.get("due") or t.get("td"))):
+            continue
+        deps = [{"id": d, "text": by_id[d]["t"]["text"], "st": by_id[d]["t"].get("st"), "own": by_id[d]["t"]["owner"]}
+                for d in t.get("dep", "").split(",") if d in by_id]
+        blk = [{"id": b, "text": by_id[b]["t"]["text"], "due": by_id[b]["t"].get("due", "")}
+               for b in blocks.get(tid, []) if b in by_id and open_task(by_id[b]["t"])]
+        decs = []
+        dfile = x["file"].parent / "decisions.md"
+        srcs = [s for s in t.get("src", "").split(",") if s.startswith("min-")]
+        if x["scope"] != "tracker" and dfile.exists() and srcs:
+            decs = [l.strip() for l in dfile.read_text(encoding="utf-8").splitlines()
+                    if l.startswith("D-") and any(s in l for s in srcs)]
+        fp = hashlib.sha1("|".join([t["text"], t.get("note", ""), t.get("due", ""), t["owner"] or "", t.get("st", ""),
+                                    t.get("pri", ""), t.get("dep", "")]).encode()).hexdigest()[:10]
+        out.append({"id": tid, "prj": names.get(x["scope"], ctx) if x["scope"] != "tracker" else ctx,
+                    "goal": goals.get(x["scope"], ""), "text": t["text"], "note": t.get("note", ""),
+                    "own": t["owner"] or "", "due": t.get("due", ""), "pri": t.get("pri", ""), "st": t.get("st", ""),
+                    "src": t.get("src", ""), "fin": fin, "td": t.get("td", ""), "deps": deps, "blocks": blk,
+                    "decisions": decs, "fp": fp})
+    return out
+
+
+def td_write_ids(v, ctx, created):
+    """created = {T-id: td id}. writes td:<id> to md lines; validate + restore on failure."""
+    edits = {}
+    for x in v.tasks(ctx):
+        tid = x["t"].get("id")
+        if tid in created and not x["t"].get("td"):
+            raw = edits.get(x["file"], read_raw(x["file"]))
+            before = re.split(r"\r\n|\n", raw)[x["line"] - 1]
+            segs = before.split(" | ")
+            set_seg(segs, "td", created[tid])
+            edits[x["file"]] = swap_line(raw, x["line"], before, " | ".join(segs))
+    return commit(v, edits) if edits else []
+
+
+def td_feedback(i, c, r):
+    """Todoist -> vault proposals for one task. r = remote state of its td task."""
+    tid, td, fb = i["id"], i["td"], []
+    base = {"id": tid, "td": td, "text": i["text"], "note": i["note"]}
+    if r.get("deleted"):
+        return [dict(base, kind="deleted")]
+    if r.get("checked") and not i["fin"] and not c.get("closed"):
+        fb.append(dict(base, kind="completed"))
+    seen = set(c.get("seen", []))
+    for cm in r.get("comments", []):
+        if str(cm.get("id")) not in seen:
+            fb.append(dict(base, kind="comment", value=cm.get("content", ""), at=cm.get("at", "")))
+    if i["fin"]:
+        return fb
+    rdesc = td_strip_key(r.get("description", ""))
+    if c.get("sent_desc"):
+        if td_norm(rdesc) != td_norm(td_strip_key(c["sent_desc"])):
+            fb.append(dict(base, kind="desc_edit", value=rdesc, was=td_strip_key(c["sent_desc"])))
+    elif not td_is_legacy(r.get("description", "")):
+        fb.append(dict(base, kind="desc_edit", value=rdesc, was=""))
+    if c.get("sent_title") and td_norm(r.get("content")) != td_norm(c["sent_title"]):
+        fb.append(dict(base, kind="title_edit", value=r.get("content", ""), was=c["sent_title"]))
+    rdue = r.get("due") or ""
+    if "sent_due" in c and rdue != c["sent_due"] and rdue != i["due"]:
+        fb.append(dict(base, kind="due_change", value=rdue, vault=i["due"]))
+    rp = r.get("priority")
+    if "sent_pri" in c and rp and rp != c["sent_pri"] and rp != TD_PRI.get(i["pri"]):
+        fb.append(dict(base, kind="pri_change", value=rp, vault=i["pri"]))
+    return fb
+
+
+def td_push(i, c, r, fb, ctx):
+    """vault -> Todoist op for one task, or None. never overwrites a field the user edited in Todoist."""
+    tid, td = i["id"], i["td"]
+    kinds = {f["kind"] for f in fb}
+    if i["fin"]:
+        return None if (r and r.get("checked")) or c.get("closed") else {"id": tid, "op": "close", "td": td, "st": i["st"]}
+    reopen = bool(r and r.get("checked") and c.get("closed"))
+    if i["need_text"] or kinds & {"deleted", "completed"}:
+        return {"id": tid, "op": "reopen", "td": td} if reopen else None
+    title, body = c["title"], td_body(c["desc"], tid, ctx)
+    pri, due = TD_PRI.get(i["pri"], "p4"), i["due"]
+    op = {"id": tid, "td": td, "project": i["prj"]}
+    if not td:
+        op.update(op="create", title=title, description=body, due=due, priority=pri)
+        return op
+    if td_norm(c.get("sent_title")) != td_norm(title) and "title_edit" not in kinds:
+        op["title"] = title
+    if td_norm(c.get("sent_desc")) != td_norm(body) and "desc_edit" not in kinds:
+        op["description"] = body
+    if c.get("sent_due") != due and "due_change" not in kinds and (not r or (r.get("due") or "") != due):
+        op["due"] = due
+    if c.get("sent_pri") != pri and "pri_change" not in kinds and (not r or r.get("priority") != pri):
+        op["priority"] = pri
+    if len(op) == 3 and not reopen:
+        return None
+    op["op"] = "reopen" if reopen else "update"
+    return op
+
+
+def cmd_todoist(v, a):
+    """two-way mirror helper. Python: scope, diff, cache, md writes. Model: Spanish text + Todoist MCP calls.
+    plan   -> items; need_text = title/description must be (re)written (new or vault line changed)
+    diff   -> --texts (model text) + --remote (Todoist state) -> push ops + feedback proposals
+    commit -> --result (ops pushed) [--remote + --ack ids: feedback processed -> comments seen, Todoist edits = baseline]"""
+    if a.ctx not in v.contexts:
+        print("ERR unknown ctx %s" % a.ctx)
+        return 1
+    cache = td_load(v, a.ctx)
+    items = td_items(v, a.ctx, a.project)
+    if a.texts:
+        fps = {i["id"]: i["fp"] for i in items}
+        for tid, val in json.loads(Path(a.texts).read_text(encoding="utf-8")).items():
+            if tid in fps and isinstance(val, dict) and val.get("title") and val.get("desc"):
+                cache.setdefault(tid, {}).update(fp=fps[tid], title=val["title"].strip(), desc=val["desc"].strip())
+        td_save(v, a.ctx, cache)
+    for i in items:
+        c = cache.get(i["id"], {})
+        i["need_text"] = not i["fin"] and (c.get("fp") != i["fp"] or not c.get("title"))
+    if a.action == "plan":
+        need = [i for i in items if i["need_text"]]
+        print(json.dumps({"ctx": a.ctx, "count": len(items), "need_text": len(need),
+                          "items": need if a.missing else items}, ensure_ascii=False, indent=1))
+        return 0
+    remote = json.loads(Path(a.remote).read_text(encoding="utf-8")) if a.remote else {}
+    if a.action == "diff":
+        push, feedback = [], []
+        for i in items:
+            c = cache.get(i["id"], {})
+            r = (remote.get(i["td"]) or ({"deleted": True} if a.remote else None)) if i["td"] else None
+            fb = td_feedback(i, c, r) if r else []
+            feedback += fb
+            op = td_push(i, c, r, fb, a.ctx)
+            if op:
+                push.append(op)
+        need = [i["id"] for i in items if i["need_text"]]
+        counts = {k: sum(p["op"] == k for p in push) for k in ("create", "update", "close", "reopen")}
+        counts.update(feedback=len(feedback), need_text=len(need))
+        print(json.dumps({"ctx": a.ctx, "counts": counts, "push": push, "feedback": feedback, "need_text": need},
+                         ensure_ascii=False, indent=1))
+        return 0
+    raw_res = Path(a.result).read_text(encoding="utf-8").strip() if a.result else ""
+    done = json.loads(raw_res) if raw_res else []
+    acks = set((a.ack or "").split(",")) - {""}
+    created = {}
+    for p in done:
+        c = cache.setdefault(p["id"], {})
+        if p.get("td"):
+            c["td"] = p["td"]
+            if p.get("op") == "create":
+                created[p["id"]] = p["td"]
+        if p.get("op") in ("close", "reopen"):
+            c["closed"] = p["op"] == "close"
+        for k, ck in TD_SENT.items():
+            if k in p:
+                c[ck] = p[k] or ""
+    for i in items:
+        td = i["td"] or created.get(i["id"])
+        r = remote.get(td) if td else None
+        if not r:
+            continue
+        if i["id"] in acks:
+            c = cache.setdefault(i["id"], {})
+            c["seen"] = sorted(set(c.get("seen", [])) | {str(cm.get("id")) for cm in r.get("comments", [])})
+            c.update(sent_title=r.get("content", c.get("sent_title", "")), sent_desc=r.get("description", c.get("sent_desc", "")),
+                     sent_due=r.get("due") or "", sent_pri=r.get("priority", c.get("sent_pri", "")), fp="")
+    errs = td_write_ids(v, a.ctx, created)
+    td_save(v, a.ctx, cache)
+    if errs:
+        print("ERR td ids not written: %s" % "; ".join(errs))
+        return 1
+    print("TODOIST_COMMIT pushed=%d created=%d acked=%d" % (len(done), len(created), len(acks)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(prog="pa.py")
     ap.add_argument("--vault")
@@ -1737,6 +1969,15 @@ def main():
     p.add_argument("--missing", action="store_true")
     p.add_argument("--out")
     p.add_argument("--open", action="store_true")
+    p = sp.add_parser("todoist")
+    p.add_argument("action", choices=["plan", "diff", "commit"])
+    p.add_argument("--ctx", required=True)
+    p.add_argument("--project")
+    p.add_argument("--missing", action="store_true")
+    p.add_argument("--texts")
+    p.add_argument("--remote")
+    p.add_argument("--result")
+    p.add_argument("--ack")
     p = sp.add_parser("lint-output")
     p.add_argument("--payload")
     a = ap.parse_args()
@@ -1753,7 +1994,7 @@ def main():
           "check": cmd_check, "new-project": cmd_new_project, "upgrade": cmd_upgrade, "model": cmd_model, "view": cmd_view,
           "open": cmd_open, "brief": cmd_brief, "apply": cmd_apply, "compose": cmd_compose,
           "prefs": cmd_prefs, "lint-output": cmd_lint_output, "ask": cmd_ask, "graph": cmd_graph, "dupes": cmd_dupes,
-          "checklist": cmd_checklist}[a.cmd]
+          "checklist": cmd_checklist, "todoist": cmd_todoist}[a.cmd]
     return fn(v, a)
 
 

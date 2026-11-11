@@ -371,9 +371,6 @@ class TestWaitsOn(Base):
         self.assertIn("Review schema diff", next(l for l in out.splitlines() if "Cutover rehearsal" in l))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestChecklist(Base):
     def page_data(self, out):
@@ -408,3 +405,60 @@ class TestChecklist(Base):
         self.assertNotIn("T-0008", self.run_cl("--missing")[1])
         run(self.v, "apply", "due", "--ctx", "acme-corp", "--task", "T-0008", "--due", "2026-10-31", "--yes")
         self.assertIn("T-0008", self.run_cl("--missing")[1])
+
+
+class TestTodoist(Base):
+    def td(self, *args):
+        code, out = run(self.v, "todoist", *args, "--ctx", "acme-corp")
+        return code, (json.loads(out) if out.startswith("{") else out)
+
+    def write(self, name, data):
+        p = Path(self.tmp.name) / name
+        p.write_text(json.dumps(data) if not isinstance(data, str) else data, encoding="utf-8")
+        return str(p)
+
+    def test_cycle_push_feedback_ack(self):
+        _, plan = self.td("plan", "--missing")
+        self.assertTrue(plan["items"])
+        tid = plan["items"][0]["id"]
+        texts = self.write("t.json", {i["id"]: {"title": "Título " + i["id"], "desc": "Qué: algo"} for i in plan["items"]})
+        _, d = self.td("diff", "--texts", texts)
+        self.assertEqual(d["counts"]["need_text"], 0)
+        op = next(p for p in d["push"] if p["id"] == tid)
+        self.assertEqual(op["op"], "create")
+        self.assertTrue(op["description"].endswith("%s · acme-corp" % tid))
+        res = [dict({k: v for k, v in op.items() if k != "project"}, td="X1")]
+        remote = {"X1": {"content": op["title"], "description": op["description"], "due": op["due"],
+                         "priority": op["priority"], "checked": False, "comments": []}}
+        code, out = self.td("commit", "--result", self.write("r.json", res), "--remote", self.write("rem.json", remote))
+        self.assertEqual(code, 0, out)
+        self.assertIn("td:X1", next(l for l in self.v.rglob("*.md") if "td:X1" in l.read_text(encoding="utf-8")).read_text(encoding="utf-8"))
+        _, d = self.td("diff", "--remote", self.write("rem.json", remote), "--project", "none")
+        remote["X1"].update(content="Editado por usuario", due="2030-01-01", comments=[{"id": "c1", "content": "listo"}])
+        rp = self.write("rem2.json", remote)
+        _, d = self.td("diff", "--remote", rp)
+        kinds = {f["kind"] for f in d["feedback"] if f["id"] == tid}
+        self.assertEqual(kinds, {"title_edit", "due_change", "comment"})
+        self.assertFalse(any(p["id"] == tid for p in d["push"]))
+        self.td("commit", "--result", self.write("e.json", ""), "--remote", rp, "--ack", tid)
+        _, d = self.td("diff", "--remote", rp)
+        self.assertFalse(any(f["id"] == tid for f in d["feedback"]))
+        self.assertIn(tid, d["need_text"])
+
+    def test_completed_and_deleted_are_proposals(self):
+        _, plan = self.td("plan")
+        a, b = [i for i in plan["items"] if not i["fin"]][:2]
+        for i, td in ((a, "A1"), (b, "B1")):
+            for f in self.v.rglob("*.md"):
+                txt = f.read_text(encoding="utf-8")
+                if "id:%s " % i["id"] in txt and not i["td"]:
+                    f.write_text(txt.replace("id:%s " % i["id"], "id:%s | td:%s " % (i["id"], td), 1), encoding="utf-8")
+        a["td"], b["td"] = a["td"] or "A1", b["td"] or "B1"
+        _, d = self.td("diff", "--remote", self.write("r.json", {a["td"]: {"checked": True, "description": a["id"]}}))
+        kinds = {(f["id"], f["kind"]) for f in d["feedback"]}
+        self.assertIn((a["id"], "completed"), kinds)
+        self.assertIn((b["id"], "deleted"), kinds)
+
+
+if __name__ == "__main__":
+    unittest.main()
